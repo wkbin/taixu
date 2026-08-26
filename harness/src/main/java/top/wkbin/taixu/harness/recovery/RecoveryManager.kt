@@ -4,6 +4,7 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.serialization.json.Json
+import top.wkbin.taixu.core.database.AgentApprovalRepository
 import top.wkbin.taixu.core.database.HarnessRuntimeRepository
 import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.harness.operation.OperationCoordinator
@@ -24,11 +25,20 @@ sealed interface RecoveryOutcome {
 class RecoveryManager @Inject constructor(
     private val repository: HarnessRuntimeRepository,
     private val coordinator: OperationCoordinator,
+    private val approvalRepository: AgentApprovalRepository? = null,
     private val json: Json,
 ) {
     suspend fun recoverSession(sessionId: String): RecoveryOutcome {
         val operation = coordinator.active(sessionId) ?: return RecoveryOutcome.Clean
-        if (operation.status == OperationStatus.WAITING_APPROVAL.id) return RecoveryOutcome.WaitingApproval
+        if (operation.status == OperationStatus.WAITING_APPROVAL.id) {
+            // 审批等待期间进程死亡：审批可能已在停机期间过期/丢失。
+            // pendingNow 会先清扫过期请求；无可恢复审批时终止该操作，避免 lane 永久占用。
+            if (approvalRepository != null && approvalRepository.pendingNow(sessionId).isEmpty()) {
+                coordinator.finish(sessionId, "aborted", details = "等待中的审批已过期或失效", laneName = operation.laneName)
+                return RecoveryOutcome.Suspended(operation.id, "等待中的审批已过期或失效")
+            }
+            return RecoveryOutcome.WaitingApproval
+        }
         val snapshot = runCatching {
             json.decodeFromString(OperationSnapshot.serializer(), operation.stateJson)
         }.getOrElse {

@@ -252,4 +252,42 @@ class AnthropicApiTest {
         assertTrue(error is IllegalStateException)
         assertTrue(error!!.message!!.contains("invalid x-api-key"))
     }
+
+    @Test
+    fun `parses usage from non-stream response`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"content":[{"type":"text","text":"ok"}],
+                   "usage":{"input_tokens":210,"output_tokens":88,
+                     "cache_read_input_tokens":150,"cache_creation_input_tokens":60}}""",
+            ),
+        )
+        val result = api.chat(model(), listOf(ApiMessage(role = "user", content = "hi")))
+        assertEquals(210L, result.usage.inputTokens)
+        assertEquals(88L, result.usage.outputTokens)
+        assertEquals(150L, result.usage.cacheReadTokens)
+        assertEquals(60L, result.usage.cacheWriteTokens)
+    }
+
+    @Test
+    fun `parses usage from message_start and message_delta in stream`() = runBlocking {
+        val sse = buildString {
+            append("event: message_start\n")
+            append(
+                """data: {"type":"message_start","message":{"usage":{"input_tokens":512,"output_tokens":2,"cache_read_input_tokens":300,"cache_creation_input_tokens":50}}}""" + "\n\n",
+            )
+            append("event: content_block_delta\n")
+            append("""data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"结论"}}""" + "\n\n")
+            append("event: message_delta\n")
+            append("""data: {"type":"message_delta","delta":{},"usage":{"output_tokens":96}}""" + "\n\n")
+            append("event: message_stop\n")
+            append("""data: {"type":"message_stop"}""" + "\n\n")
+        }
+        server.enqueue(MockResponse().setBody(sse).setHeader("Content-Type", "text/event-stream"))
+        val result = api.chatStream(model(), listOf(ApiMessage(role = "user", content = "hi")), onReasoning = {}, onDelta = {})
+        assertEquals(512L, result.usage.inputTokens)
+        assertEquals(96L, result.usage.outputTokens)
+        assertEquals(300L, result.usage.cacheReadTokens)
+        assertEquals(50L, result.usage.cacheWriteTokens)
+    }
 }

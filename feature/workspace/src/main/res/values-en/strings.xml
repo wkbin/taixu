@@ -39,6 +39,9 @@
     <string name="workspace_details">Details</string>
     <string name="workspace_shared_storage">Host shared storage (/sdcard)</string>
     <string name="workspace_shared_storage_description">Android Download and shared directories are mounted for zero-copy access</string>
+    <string name="workspace_shared_permission_banner_title">"All files access" permission missing</string>
+    <string name="workspace_shared_permission_banner_hint">Android filters files owned by other apps in shared storage, so only folders may be visible. Grant access to browse everything.</string>
+    <string name="workspace_shared_permission_go_settings">Grant access</string>
     <string name="workspace_projects_section">Isolated workspace projects</string>
     <string name="workspace_projects_description">Located under /workspace in the Linux sandbox with real-time agent access</string>
     <string name="workspace_no_projects">No workspace projects yet</string>

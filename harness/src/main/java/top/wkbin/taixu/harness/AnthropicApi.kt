@@ -15,6 +15,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -77,6 +78,7 @@ internal class AnthropicApi(
                 val reasoningText = StringBuilder()
                 // index -> 工具调用累积器（Claude 以 content block index 标识每个 tool_use）
                 val toolCalls = mutableMapOf<Int, ToolCallAccumulator>()
+                var usage = ChatUsage()
                 while (true) {
                     val line = source.readUtf8Line() ?: break
                     if (!line.startsWith("data:")) continue
@@ -86,6 +88,17 @@ internal class AnthropicApi(
                         json.parseToJsonElement(data) as? JsonObject
                     }.getOrNull() ?: continue
                     when (event["type"]?.jsonPrimitive?.contentOrNull) {
+                        "message_start" -> {
+                            // message_start.usage 携带 input/cache 计数（output_tokens 此时尚未确定）
+                            val messageUsage = (event["message"] as? JsonObject)?.get("usage") as? JsonObject
+                            if (messageUsage != null) usage = parseUsage(messageUsage)
+                        }
+                        "message_delta" -> {
+                            // message_delta.usage.output_tokens 为最终值，覆盖 message_start 的占位数
+                            val messageUsage = event["usage"] as? JsonObject
+                            val outputTokens = messageUsage?.get("output_tokens")?.jsonPrimitive?.longOrNull
+                            if (outputTokens != null) usage = usage.copy(outputTokens = outputTokens)
+                        }
                         "content_block_start" -> {
                             val index = event["index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
                             val block = event["content_block"] as? JsonObject
@@ -125,6 +138,7 @@ internal class AnthropicApi(
                     content = text.toString().ifEmpty { null },
                     toolCalls = toolCalls.values.map { ApiToolCallSpec(it.id, it.name, it.arguments.toString()) },
                     reasoningContent = reasoningText.toString().ifEmpty { null },
+                    usage = usage,
                 )
             }
         } finally {
@@ -314,8 +328,17 @@ internal class AnthropicApi(
             content = text.toString().ifEmpty { null },
             toolCalls = calls,
             reasoningContent = reasoning.toString().ifEmpty { null },
+            usage = (root["usage"] as? JsonObject)?.let(::parseUsage) ?: ChatUsage(),
         )
     }
+
+    /** Anthropic usage：input/output_tokens + cache_read/cache_creation_input_tokens。 */
+    private fun parseUsage(usage: JsonObject): ChatUsage = ChatUsage(
+        inputTokens = usage["input_tokens"]?.jsonPrimitive?.longOrNull ?: 0,
+        outputTokens = usage["output_tokens"]?.jsonPrimitive?.longOrNull ?: 0,
+        cacheReadTokens = usage["cache_read_input_tokens"]?.jsonPrimitive?.longOrNull ?: 0,
+        cacheWriteTokens = usage["cache_creation_input_tokens"]?.jsonPrimitive?.longOrNull ?: 0,
+    )
 
     private fun extractError(body: String): String {
         val message = runCatching {

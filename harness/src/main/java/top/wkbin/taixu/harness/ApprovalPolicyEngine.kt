@@ -62,8 +62,15 @@ class ApprovalPolicyEngine {
         }
     }
 
-    fun createRequest(sessionId: String, toolCall: ToolCall, workspace: String, decision: ApprovalDecision): AgentApprovalRequestEntity =
-        AgentApprovalRequestEntity(
+    fun createRequest(
+        sessionId: String,
+        toolCall: ToolCall,
+        workspace: String,
+        decision: ApprovalDecision,
+        operationId: String? = null,
+    ): AgentApprovalRequestEntity {
+        val now = System.currentTimeMillis()
+        return AgentApprovalRequestEntity(
             id = UUID.randomUUID().toString(),
             sessionId = sessionId,
             toolCallId = toolCall.id,
@@ -73,8 +80,24 @@ class ApprovalPolicyEngine {
             riskLevel = decision.riskLevel,
             reason = decision.reason,
             summary = decision.summary,
-            createdAt = System.currentTimeMillis(),
+            createdAt = now,
+            operationId = operationId,
+            argsHash = argsHash(toolCall.args.toString()),
+            expiresAt = now + APPROVAL_TTL_MS,
         )
+    }
+
+    companion object {
+        /** 审批有效期：超时未决的请求自动失效，恢复执行前也会复核。 */
+        const val APPROVAL_TTL_MS: Long = 10 * 60 * 1000L
+
+        /** argumentsJson 的 SHA-256 十六进制摘要；创建时写入，执行前复核。 */
+        fun argsHash(argumentsJson: String): String {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(argumentsJson.toByteArray(Charsets.UTF_8))
+            return digest.joinToString("") { "%02x".format(it) }
+        }
+    }
 
     private fun summarize(tool: HarnessTool, args: JsonObject): String = when (tool) {
         HarnessTool.WRITE, HarnessTool.EDIT -> "${tool.name.lowercase()} ${args["path"]?.jsonPrimitive?.content.orEmpty()}"

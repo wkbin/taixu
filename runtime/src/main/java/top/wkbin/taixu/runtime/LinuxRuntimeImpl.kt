@@ -636,7 +636,15 @@ class LinuxRuntimeImpl @Inject constructor(
         distroId: String?,
     ): ManagedProcess {
         ensureReady()
-        return processRegistry.start(id, command, toolId, type, distroId ?: _activeDistroId.value)
+        val mounts = storageMounts()
+        return processRegistry.start(
+            id = id,
+            command = command,
+            toolId = toolId,
+            type = type,
+            distroId = distroId ?: _activeDistroId.value,
+            mounts = mounts,
+        )
     }
 
     override suspend fun stopBackground(id: String): Boolean = processRegistry.stop(id)

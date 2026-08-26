@@ -72,4 +72,38 @@ class ApprovalPolicyEngineTest {
             assertFalse("$tool should be unrestricted", policy.decide(ApprovalMode.FULL_ACCESS, tool, toolArgs, workspace).required)
         }
     }
+
+    @Test
+    fun `create request binds operation args hash and expiry`() {
+        val toolCall = ToolCall(
+            id = "call-1",
+            createdAt = 1L,
+            tool = HarnessTool.BASE,
+            args = args("command" to "rm -rf build"),
+            rawToolName = "base",
+        )
+        val before = System.currentTimeMillis()
+        val request = policy.createRequest(
+            sessionId = "session-1",
+            toolCall = toolCall,
+            workspace = workspace,
+            decision = ApprovalDecision(required = true, riskLevel = "high", reason = "r", summary = "s"),
+            operationId = "op-9",
+        )
+
+        assertEquals("op-9", request.operationId)
+        assertEquals(ApprovalPolicyEngine.argsHash(toolCall.args.toString()), request.argsHash)
+        assertEquals(request.createdAt + ApprovalPolicyEngine.APPROVAL_TTL_MS, request.expiresAt)
+        assertTrue("审批有效期应为正数", request.expiresAt > before)
+    }
+
+    @Test
+    fun `args hash is deterministic and content sensitive`() {
+        val a = ApprovalPolicyEngine.argsHash("""{"command":"ls"}""")
+        val b = ApprovalPolicyEngine.argsHash("""{"command":"ls"}""")
+        val c = ApprovalPolicyEngine.argsHash("""{"command":"rm -rf /"}""")
+        assertEquals(a, b)
+        assertTrue(a != c)
+        assertEquals(64, a.length) // SHA-256 hex
+    }
 }

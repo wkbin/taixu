@@ -39,6 +39,9 @@
     <string name="workspace_details">详情</string>
     <string name="workspace_shared_storage">宿主共享存储 (/sdcard)</string>
     <string name="workspace_shared_storage_description">已挂载 Android Download 与共享目录，零拷贝直达</string>
+    <string name="workspace_shared_permission_banner_title">缺少「所有文件访问」权限</string>
+    <string name="workspace_shared_permission_banner_hint">Android 会过滤共享存储中其他应用的文件，当前可能只显示文件夹。授权后即可完整浏览。</string>
+    <string name="workspace_shared_permission_go_settings">去授权</string>
     <string name="workspace_projects_section">工坊隔离工程</string>
     <string name="workspace_projects_description">位于 Linux 沙箱 /workspace 目录下，与 Agent 实时互通</string>
     <string name="workspace_no_projects">还没有工坊工程</string>

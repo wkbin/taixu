@@ -253,6 +253,14 @@ class WorkspaceViewModel @Inject constructor(
     private val _loadingFiles = MutableStateFlow(false)
     val loadingFiles: StateFlow<Boolean> = _loadingFiles.asStateFlow()
 
+    /**
+     * 当前浏览的项目位于宿主共享存储（/storage/emulated/0），
+     * 且缺少"所有文件访问"权限——此时系统会过滤其他应用的文件（只显示文件夹），
+     * 文件浏览器需要展示授权引导横幅。
+     */
+    private val _sharedStorageAccessLimited = MutableStateFlow(false)
+    val sharedStorageAccessLimited: StateFlow<Boolean> = _sharedStorageAccessLimited.asStateFlow()
+
     // ==================== 代码编辑器状态 ====================
     private val _openedFilePath = MutableStateFlow<String?>(null)
     val openedFilePath: StateFlow<String?> = _openedFilePath.asStateFlow()
@@ -438,6 +446,7 @@ class WorkspaceViewModel @Inject constructor(
         val path = _currentPath.value
         viewModelScope.launch {
             _loadingFiles.value = true
+            refreshSharedStorageAccessLimited(proj)
             val result = workspaceManager.listFiles(proj, path)
             if (result.isSuccess) {
                 _fileItems.value = result.getOrNull().orEmpty()
@@ -447,6 +456,30 @@ class WorkspaceViewModel @Inject constructor(
             _loadingFiles.value = false
         }
     }
+
+    /** 从系统授权页返回后调用：重新评估权限状态并刷新目录。 */
+    fun refreshAfterPermissionReturn() {
+        val proj = _selectedProject.value ?: return
+        viewModelScope.launch {
+            refreshSharedStorageAccessLimited(proj)
+            refreshDirectory()
+        }
+    }
+
+    private suspend fun refreshSharedStorageAccessLimited(projectName: String) {
+        _sharedStorageAccessLimited.value =
+            workspaceManager.usesSharedStorage(projectName) && !hasSharedStorageAccess()
+    }
+
+    private fun hasSharedStorageAccess(): Boolean =
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            android.os.Environment.isExternalStorageManager()
+        } else {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
 
     fun createFile(name: String) {
         val proj = _selectedProject.value ?: return

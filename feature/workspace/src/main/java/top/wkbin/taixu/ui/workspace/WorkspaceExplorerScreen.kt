@@ -2,6 +2,13 @@ package top.wkbin.taixu.ui.workspace
 
 import top.wkbin.taixu.ui.components.RuntimeAlertDialog
 
+import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -47,6 +54,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
 import top.wkbin.taixu.feature.workspace.R
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,6 +89,20 @@ fun WorkspaceExplorerScreen(
     val loading by viewModel.loadingFiles.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val sharedStorageAccessLimited by viewModel.sharedStorageAccessLimited.collectAsStateWithLifecycle()
+
+    val context = LocalContext.current
+    val allFilesPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        // 从系统"所有文件访问"授权页返回（无论是否授权）都重新评估并刷新
+        viewModel.refreshAfterPermissionReturn()
+    }
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) {
+        viewModel.refreshAfterPermissionReturn()
+    }
 
     var showCreateMenu by remember { mutableStateOf(false) }
     var showCreateFileDialog by remember { mutableStateOf(false) }
@@ -168,6 +190,24 @@ fun WorkspaceExplorerScreen(
             )
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            // 共享存储"所有文件访问"权限缺失横幅：系统会过滤其他应用的文件（只显示文件夹）
+            if (sharedStorageAccessLimited) {
+                SharedStoragePermissionBanner(
+                    onAuthorize = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            allFilesPermissionLauncher.launch(
+                                Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    Uri.parse("package:${context.packageName}"),
+                                ),
+                            )
+                        } else {
+                            legacyStoragePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        }
+                    },
+                )
+            }
 
             // 消息提示
             message?.let { notice ->
@@ -414,6 +454,51 @@ private fun BreadcrumbChip(
                 ),
                 color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
             )
+        }
+    }
+}
+
+@Composable
+private fun SharedStoragePermissionBanner(onAuthorize: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            RuntimeIcon(
+                RuntimeIconName.Alert,
+                Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.workspace_shared_permission_banner_title),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                Text(
+                    text = stringResource(R.string.workspace_shared_permission_banner_hint),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
+                )
+            }
+            TextButton(onClick = onAuthorize) {
+                Text(
+                    text = stringResource(R.string.workspace_shared_permission_go_settings),
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
     }
 }

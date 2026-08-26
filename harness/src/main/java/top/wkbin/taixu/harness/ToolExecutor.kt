@@ -55,6 +55,7 @@ class ToolExecutor @Inject constructor(
         workspace: String = "",
         bypassApproval: Boolean = false,
         progressReporter: (suspend (String) -> Unit)? = null,
+        operationId: String? = null,
     ): ToolResult {
         val now = System.currentTimeMillis()
         val outcome = try {
@@ -65,7 +66,7 @@ class ToolExecutor @Inject constructor(
                 val decision = ApprovalPolicyEngine().decide(mode, toolCall.tool, toolCall.args, workspace)
                 if (decision.required) {
                     checkNotNull(repository) { "审批仓库未初始化" }
-                    val request = ApprovalPolicyEngine().createRequest(sessionId, toolCall, workspace, decision)
+                    val request = ApprovalPolicyEngine().createRequest(sessionId, toolCall, workspace, decision, operationId)
                     repository.create(request)
                     return ToolResult(
                         id = UUID.randomUUID().toString(),

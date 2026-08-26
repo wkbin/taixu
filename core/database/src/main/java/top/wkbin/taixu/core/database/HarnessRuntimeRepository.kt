@@ -15,6 +15,7 @@ interface HarnessRuntimeRepository {
     suspend fun branch(sessionId: String, leafId: String?): List<HarnessEntryEntity>
     suspend fun appendToLane(sessionId: String, laneName: String, entry: HarnessEntryEntity)
     suspend fun moveLane(sessionId: String, laneName: String, leafId: String?)
+    suspend fun clearLaneOperation(sessionId: String, laneName: String)
     suspend fun findOperation(operationId: String): HarnessOperationEntity?
     suspend fun listActiveOperations(sessionId: String): List<HarnessOperationEntity>
     suspend fun acceptOperation(entry: HarnessEntryEntity, lane: HarnessLaneEntity, operation: HarnessOperationEntity)
@@ -72,6 +73,11 @@ class RoomHarnessRuntimeRepository @Inject constructor(
         val lane = ensureLane(sessionId, laneName)
         if (leafId != null) require(dao.findEntry(leafId)?.sessionId == sessionId) { "Unknown lane target $leafId" }
         dao.upsertLane(lane.copy(leafId = leafId, updatedAt = System.currentTimeMillis()))
+    }
+
+    override suspend fun clearLaneOperation(sessionId: String, laneName: String) {
+        val lane = dao.findLane(sessionId, laneName) ?: return
+        dao.upsertLane(lane.copy(currentOperationId = null, updatedAt = System.currentTimeMillis()))
     }
 
     override suspend fun findOperation(operationId: String) = dao.findOperation(operationId)

@@ -486,6 +486,19 @@ class WorkspaceManager @Inject constructor(
 
     // ==================== 项目内文件管理 API ====================
 
+    /**
+     * 该项目根目录是否位于宿主共享存储（/storage/emulated/0）之下。
+     * 共享存储受 Android 11+ "所有文件访问" 权限约束：未授权时系统会过滤
+     * 其他应用的文件（典型表现是只列出文件夹），需要引导用户授权。
+     */
+    suspend fun usesSharedStorage(projectName: String): Boolean = withContext(Dispatchers.IO) {
+        if (projectName == "sdcard") return@withContext true
+        val entityPath = workspaceDao.findByName(projectName)?.path ?: return@withContext false
+        val canonical = runCatching { File(entityPath).canonicalPath }.getOrDefault(entityPath)
+        val sharedRoot = runCatching { SHARED_STORAGE_ROOT.canonicalPath }.getOrDefault(SHARED_STORAGE_ROOT.absolutePath)
+        canonical == sharedRoot || canonical.startsWith(sharedRoot + File.separator)
+    }
+
     /** 列出项目指定相对路径下的所有文件与子目录（目录优先排序）。 */
     suspend fun listFiles(projectName: String, relativePath: String = ""): AppResult<List<WorkspaceFileItem>> =
         fileService.listFiles(projectName, relativePath)

@@ -60,6 +60,7 @@ internal class ChatApi(
                     content = message.content,
                     toolCalls = calls,
                     reasoningContent = message.reasoning_content,
+                    usage = parsed.usage?.toChatUsage() ?: ChatUsage(),
                 )
             }
         }
@@ -67,6 +68,10 @@ internal class ChatApi(
     /**
      * 流式调用：逐行读取 SSE（data: ...），每个内容增量立即通过 [onDelta] 回调
      * 交给 UI；工具调用参数按 index 分片累积。推理增量通过 [onReasoning] 回调。
+     *
+     * 默认携带 stream_options.include_usage 请求最终 usage 块；个别严格校验的
+     * Provider 会因此 400，此时自动降级为不带该参数重试一次（请求在流开始前
+     * 即失败，不会有增量重复发送的风险）。
      */
     @OptIn(InternalCoroutinesApi::class)
     suspend fun chatStream(
@@ -74,8 +79,25 @@ internal class ChatApi(
         messages: List<ApiMessage>,
         onReasoning: (String) -> Unit = {},
         onDelta: (String) -> Unit,
+    ): ChatResult = try {
+        executeStream(model, messages, onReasoning, onDelta, includeUsage = true)
+    } catch (rejected: IllegalStateException) {
+        if (rejected.message?.contains("stream_options", ignoreCase = true) == true) {
+            executeStream(model, messages, onReasoning, onDelta, includeUsage = false)
+        } else {
+            throw rejected
+        }
+    }
+
+    @OptIn(InternalCoroutinesApi::class)
+    private suspend fun executeStream(
+        model: ModelConfig,
+        messages: List<ApiMessage>,
+        onReasoning: (String) -> Unit,
+        onDelta: (String) -> Unit,
+        includeUsage: Boolean,
     ): ChatResult = withContext(Dispatchers.IO) {
-        val call = okHttpClient.newCall(buildRequest(model, messages, stream = true))
+        val call = okHttpClient.newCall(buildRequest(model, messages, stream = true, includeUsage = includeUsage))
         // 关键：阻塞式 readUtf8Line() 不感知协程取消。用户点"停止"时必须主动 call.cancel()
         // 关闭底层 socket，阻塞读才会立刻抛出 IOException 退出——否则要等读超时（最长 3 分钟），
         // 表现为"停止按钮没反应"。
@@ -94,15 +116,21 @@ internal class ChatApi(
                 // 推理模型的 thinking 内容（如 DeepSeek-R1 的 reasoning_content），后续轮次需原样传回
                 val reasoningText = StringBuilder()
                 val toolCalls = mutableMapOf<Int, ToolCallAccumulator>()
+                var usage = ChatUsage()
                 while (true) {
                     val line = source.readUtf8Line() ?: break
                     if (!line.startsWith("data:")) continue
                     val data = line.removePrefix("data:").trim()
                     if (data == "[DONE]") break
-                    val choice = runCatching {
-                        (json.parseToJsonElement(data) as? JsonObject)
-                            ?.get("choices")?.let { it as? JsonArray }?.firstOrNull() as? JsonObject
-                    }.getOrNull() ?: continue
+                    val root = runCatching { json.parseToJsonElement(data) as? JsonObject }.getOrNull()
+                    // usage 块位于 chunk 顶层（stream_options.include_usage 时由最后一个 chunk 携带；
+                    // DeepSeek/OpenRouter 等默认就会发）。后面的块覆盖前面的，保留最终值。
+                    (root?.get("usage") as? JsonObject)?.let { block ->
+                        parseUsageBlock(block)?.let { parsed -> usage = parsed }
+                    }
+                    val choice = root
+                        ?.get("choices")?.let { it as? JsonArray }?.firstOrNull() as? JsonObject
+                        ?: continue
                     val delta = choice["delta"] as? JsonObject
                     delta?.get("content")?.let { it as? JsonPrimitive }?.contentOrNull?.let { chunk ->
                         if (chunk.isNotEmpty()) {
@@ -137,6 +165,7 @@ internal class ChatApi(
                     content = text.toString().ifEmpty { null },
                     toolCalls = calls,
                     reasoningContent = reasoningText.toString().ifEmpty { null },
+                    usage = usage,
                 )
             }
         } finally {
@@ -144,7 +173,22 @@ internal class ChatApi(
         }
     }
 
-    private fun buildRequest(model: ModelConfig, messages: List<ApiMessage>, stream: Boolean): Request {
+    /** 手工解析流式 chunk 顶层 usage（各 Provider 字段不统一，DTO 反而脆）。 */
+    private fun parseUsageBlock(block: JsonObject): ChatUsage? {
+        val input = block["prompt_tokens"]?.let { it as? JsonPrimitive }?.contentOrNull?.toLongOrNull() ?: return null
+        return ChatUsage(
+            inputTokens = input,
+            outputTokens = block["completion_tokens"]?.let { it as? JsonPrimitive }?.contentOrNull?.toLongOrNull() ?: 0,
+            reasoningTokens = (block["completion_tokens_details"] as? JsonObject)
+                ?.get("reasoning_tokens")?.let { it as? JsonPrimitive }?.contentOrNull?.toLongOrNull() ?: 0,
+            cacheReadTokens = (block["prompt_tokens_details"] as? JsonObject)
+                ?.get("cached_tokens")?.let { it as? JsonPrimitive }?.contentOrNull?.toLongOrNull()
+                ?: block["prompt_cache_hit_tokens"]?.let { it as? JsonPrimitive }?.contentOrNull?.toLongOrNull() ?: 0,
+            cacheWriteTokens = block["prompt_cache_miss_tokens"]?.let { it as? JsonPrimitive }?.contentOrNull?.toLongOrNull() ?: 0,
+        )
+    }
+
+    private fun buildRequest(model: ModelConfig, messages: List<ApiMessage>, stream: Boolean, includeUsage: Boolean = true): Request {
             val tools = if (model.pureChatMode) emptyList() else ProviderClient.buildDynamicTools(model.dynamicMcpTools)
         // JSON_TEXT 模式：把工具 JSON 描述追加到 system 消息末尾，让模型在纯文本中输出工具调用
         val effectiveMessages = if (!model.pureChatMode && model.toolCallMode == ToolCallMode.JSON_TEXT && tools.isNotEmpty()) {
@@ -162,6 +206,12 @@ internal class ChatApi(
         val requestJson = kotlinx.serialization.json.buildJsonObject {
             put("model", kotlinx.serialization.json.JsonPrimitive(model.model))
             put("stream", kotlinx.serialization.json.JsonPrimitive(stream))
+            if (stream && includeUsage) {
+                // 请求最终 usage 块（OpenAI 官方规范字段；DeepSeek/DashScope/GLM/OpenRouter 均支持）
+                put("stream_options", kotlinx.serialization.json.buildJsonObject {
+                    put("include_usage", kotlinx.serialization.json.JsonPrimitive(true))
+                })
+            }
             model.temperature?.let { put("temperature", kotlinx.serialization.json.JsonPrimitive(it)) }
             model.maxTokens?.let { put("max_tokens", kotlinx.serialization.json.JsonPrimitive(it)) }
             model.topP?.let { put("top_p", kotlinx.serialization.json.JsonPrimitive(it)) }
@@ -275,8 +325,28 @@ data class ChatResult(
     val toolCalls: List<ApiToolCallSpec>,
     /** 推理模型输出的思考内容（DeepSeek 等），多轮对话需原样传回 API。 */
     val reasoningContent: String? = null,
+    /** Provider 报告的本轮 token 用量；未报告时全部为 0。 */
+    val usage: ChatUsage = ChatUsage(),
 ) {
     val hasToolCalls: Boolean get() = toolCalls.isNotEmpty()
+}
+
+/**
+ * 一次补全的 token 用量（OpenAI usage 与 Anthropic usage 的统一投影）。
+ * OpenAI: prompt/completion_tokens + details(cached/reasoning)；
+ * Anthropic: input/output_tokens + cache_read/cache_creation_input_tokens；
+ * DeepSeek: prompt_cache_hit/miss_tokens 映射为 cacheRead/cacheWrite。
+ */
+data class ChatUsage(
+    val inputTokens: Long = 0,
+    val outputTokens: Long = 0,
+    val reasoningTokens: Long = 0,
+    val cacheReadTokens: Long = 0,
+    val cacheWriteTokens: Long = 0,
+) {
+    val hasData: Boolean
+        get() = inputTokens > 0 || outputTokens > 0 || reasoningTokens > 0 ||
+            cacheReadTokens > 0 || cacheWriteTokens > 0
 }
 
 data class ApiToolCallSpec(
@@ -338,7 +408,33 @@ data class ApiFunctionDefinition(
 @Serializable
 data class ChatCompletionResponse(
     val choices: List<ChatChoice> = emptyList(),
+    val usage: ChatUsageResponse? = null,
 )
+
+/** OpenAI 兼容 usage 块（含 DeepSeek 缓存字段与 reasoning details）。 */
+@Serializable
+data class ChatUsageResponse(
+    val prompt_tokens: Long? = null,
+    val completion_tokens: Long? = null,
+    val prompt_tokens_details: PromptTokensDetails? = null,
+    val completion_tokens_details: CompletionTokensDetails? = null,
+    val prompt_cache_hit_tokens: Long? = null,
+    val prompt_cache_miss_tokens: Long? = null,
+) {
+    @Serializable
+    data class PromptTokensDetails(val cached_tokens: Long? = null)
+
+    @Serializable
+    data class CompletionTokensDetails(val reasoning_tokens: Long? = null)
+
+    fun toChatUsage(): ChatUsage = ChatUsage(
+        inputTokens = prompt_tokens ?: 0,
+        outputTokens = completion_tokens ?: 0,
+        reasoningTokens = completion_tokens_details?.reasoning_tokens ?: 0,
+        cacheReadTokens = prompt_tokens_details?.cached_tokens ?: prompt_cache_hit_tokens ?: 0,
+        cacheWriteTokens = prompt_cache_miss_tokens ?: 0,
+    )
+}
 
 @Serializable
 data class ChatChoice(

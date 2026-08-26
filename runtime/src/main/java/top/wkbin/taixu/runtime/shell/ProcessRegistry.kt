@@ -1,5 +1,6 @@
 package top.wkbin.taixu.runtime.shell
 
+import top.wkbin.taixu.core.model.StorageMountBinding
 import top.wkbin.taixu.runtime.RuntimePathManager
 import top.wkbin.taixu.runtime.proot.ProotCommandBuilder
 import java.io.File
@@ -39,6 +40,7 @@ interface ProcessRegistry {
         toolId: String? = null,
         type: ProcessType = ProcessType.SERVICE,
         distroId: String? = null,
+        mounts: List<StorageMountBinding> = emptyList(),
     ): ManagedProcess
     suspend fun stop(id: String): Boolean
     suspend fun stopAll()
@@ -79,6 +81,7 @@ class ProcessRegistryImpl @Inject constructor(
         toolId: String?,
         type: ProcessType,
         distroId: String?,
+        mounts: List<StorageMountBinding>,
     ): ManagedProcess = mutex.withLock {
         processes.remove(id)?.session?.close()
         val safeDistro = distroId?.lowercase()?.trim()?.takeIf { it.isNotBlank() }
@@ -93,6 +96,7 @@ class ProcessRegistryImpl @Inject constructor(
                 tmpDir = pathManager.tmpDir,
                 attachmentsDir = pathManager.attachmentsDir,
                 command = command,
+                mounts = mounts,
             ),
             hostEnvironment = pathManager.hostProcessEnvironment(safeDistro),
         )

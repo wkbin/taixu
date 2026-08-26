@@ -40,6 +40,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import top.wkbin.taixu.harness.validation.ToolSchemaValidator
 
 import top.wkbin.taixu.core.datastore.AgentPreferences
 import top.wkbin.taixu.core.database.AgentSkillRepository
@@ -291,11 +292,11 @@ class HarnessLoop @Inject constructor(
                     liveFlow.value = restored
                     if (id == _currentSessionId.value) _messages.value = restored
                     setSessionState(id, SessionRunState.IDLE)
-                    setStatus(id, "上次工具执行被中断，可继续运行")
+                    setStatus(id, "上次工具执行被中断，发送消息即可继续")
                 }
                 is RecoveryOutcome.Suspended -> {
                     setSessionState(id, SessionRunState.IDLE)
-                    setStatus(id, "上次运行已暂停：${recovery.reason}")
+                    setStatus(id, "上次运行已暂停（${recovery.reason}），发送消息即可重新开始")
                 }
             }
         }
@@ -812,9 +813,21 @@ class HarnessLoop @Inject constructor(
                     totalMs = if (result.toolCalls.isEmpty() && jsonCalls.isEmpty()) now() - startedAt else null,
                     operationId = activeOperationId,
                     round = round,
+                    usage = result.usage,
+                    model = effectiveModel,
                 )
             } else {
-                operationCoordinator.providerSettled(activeOperationId, null, round = round)
+                val usageEntity = result.usage.takeIf { it.hasData }?.let {
+                    operationCoordinator.usageEntity(
+                        sessionId = sessId,
+                        operationId = activeOperationId,
+                        entryId = null,
+                        provider = effectiveModel.provider,
+                        modelId = effectiveModel.model,
+                        usage = it,
+                    )
+                }
+                operationCoordinator.providerSettled(activeOperationId, null, usage = usageEntity, round = round)
             }
             getOrCreateThinkingLiveFlow(sessId).value = false
             if (sessId == _currentSessionId.value) {
@@ -921,6 +934,34 @@ class HarnessLoop @Inject constructor(
                         args.forEach { (key, value) -> put(key, value) }
                     }
                 }
+                // 执行前 JSON Schema 校验：必填/枚举/范围/格式/组合约束。
+                // 失败时写回可读问题清单，让模型按 schema 自我纠正，而不是带着坏参数进入执行层。
+                val schemaProblems = ToolSchemaValidator.problemsFor(toolNameTrimmed, args, effectiveModel.dynamicMcpTools)
+                if (schemaProblems.isNotEmpty()) {
+                    append(
+                        sessId,
+                        ToolCall(
+                            id = spec.id,
+                            createdAt = now(),
+                            tool = tool,
+                            args = args,
+                            reasoning = result.reasoningContent,
+                            rawToolName = toolNameTrimmed,
+                        ),
+                    )
+                    append(
+                        sessId,
+                        ToolResult(
+                            id = newId(),
+                            createdAt = now(),
+                            toolCallId = spec.id,
+                            success = false,
+                            output = "工具参数校验未通过：${schemaProblems.joinToString("；")}。" +
+                                "请按工具定义修正参数后重新调用，必填字段不可省略。",
+                        ),
+                    )
+                    return@forEach
+                }
                 val toolCall = ToolCall(
                     // Preserve the provider protocol id across execution, approval,
                     // persistence and the subsequent tool result.
@@ -948,6 +989,7 @@ class HarnessLoop @Inject constructor(
                         sessId,
                         sessionWorkspace,
                         progressReporter = { progress -> setStatus(sessId, progress) },
+                        operationId = activeOperationId,
                     )
                 } catch (cancellation: CancellationException) {
                     throw cancellation
@@ -1590,10 +1632,33 @@ class HarnessLoop @Inject constructor(
         totalMs: Long? = null,
         operationId: String? = null,
         round: Int = 0,
+        usage: ChatUsage? = null,
+        model: ModelConfig? = null,
     ) {
-        val message = AssistantText(id = id, createdAt = createdAt, text = text, reasoning = reasoning, totalMs = totalMs)
+        val message = AssistantText(
+            id = id,
+            createdAt = createdAt,
+            text = text,
+            reasoning = reasoning,
+            totalMs = totalMs,
+            modelId = model?.model,
+            providerId = model?.provider,
+            promptTokens = usage?.inputTokens?.takeIf { it > 0 }?.toInt(),
+            completionTokens = usage?.outputTokens?.takeIf { it > 0 }?.toInt(),
+            cachedTokens = usage?.cacheReadTokens?.takeIf { it > 0 }?.toInt(),
+        )
         if (operationId != null) {
-            operationCoordinator.providerSettled(operationId, message, round = round)
+            val usageEntity = usage?.takeIf { it.hasData }?.let {
+                operationCoordinator.usageEntity(
+                    sessionId = sessId,
+                    operationId = operationId,
+                    entryId = id,
+                    provider = model?.provider,
+                    modelId = model?.model,
+                    usage = it,
+                )
+            }
+            operationCoordinator.providerSettled(operationId, message, usage = usageEntity, round = round)
         } else {
             messageStore.append(sessId, message)
         }
@@ -1624,10 +1689,19 @@ class HarnessLoop @Inject constructor(
             // The original loop may still be unwinding after it persisted the request.
             // Wait for it before claiming the session slot.
             sessionJobs[sessId]?.takeIf { it.isActive }?.join()
-            val claimedStatus = if (approved) {
-                top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_APPROVED
-            } else {
-                top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_REJECTED
+
+            // —— 审批有效性校验：过期 / 参数摘要 / 工作区 / operation 归属 ——
+            // 防止“用户批准的是旧参数、旧环境下的请求，实际执行的却是别的东西”。
+            val invalidation = approvalInvalidation(request)
+            val claimedStatus = when {
+                invalidation != null && request.expiresAt <= now() ->
+                    top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_EXPIRED
+                invalidation != null ->
+                    top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_FAILED
+                approved ->
+                    top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_APPROVED
+                else ->
+                    top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_REJECTED
             }
             if (!approvalRepository.claimPending(request.id, claimedStatus)) return@launch
 
@@ -1636,7 +1710,15 @@ class HarnessLoop @Inject constructor(
             startClaimedSessionRun(sessId) {
                 var approvalResultPersisted = false
                 try {
-                    val result = if (approved) {
+                    val result = if (invalidation != null) {
+                        ToolResult(
+                            id = newId(),
+                            createdAt = now(),
+                            toolCallId = request.toolCallId,
+                            success = false,
+                            output = "$invalidation。该工具调用未执行；如仍需要，请重新发起。",
+                        )
+                    } else if (approved) {
                         val args = json.parseToJsonElement(request.argumentsJson) as? JsonObject
                             ?: error("审批参数不是 JSON 对象")
                         val tool = HarnessApiMapper.toolByName(request.toolName)
@@ -1662,12 +1744,14 @@ class HarnessLoop @Inject constructor(
                     } else {
                         append(sessId, result)
                     }
-                    approvalRepository.mark(
-                        request.id,
-                        if (approved && result.success) top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_EXECUTED
-                        else if (approved) top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_FAILED
-                        else top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_REJECTED,
-                    )
+                    if (invalidation == null) {
+                        approvalRepository.mark(
+                            request.id,
+                            if (approved && result.success) top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_EXECUTED
+                            else if (approved) top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_FAILED
+                            else top.wkbin.taixu.core.database.AgentApprovalRequestEntity.STATUS_REJECTED,
+                        )
+                    }
                     approvalResultPersisted = true
                     runLoopInternal(sessId, startedAt = now())
                 } catch (cancellation: CancellationException) {
@@ -1700,6 +1784,31 @@ class HarnessLoop @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * 审批恢复执行前的四重校验；返回 null 表示有效，非 null 为拒绝原因
+     * （会作为 ToolResult 写回，让模型知晓未执行的理由并重新发起）。
+     */
+    private suspend fun approvalInvalidation(
+        request: top.wkbin.taixu.core.database.AgentApprovalRequestEntity,
+    ): String? {
+        if (request.expiresAt <= now()) {
+            val ttlMinutes = ApprovalPolicyEngine.APPROVAL_TTL_MS / 60_000L
+            return "该审批已过期（等待超过 $ttlMinutes 分钟）"
+        }
+        if (request.argsHash.isNotBlank() && request.argsHash != ApprovalPolicyEngine.argsHash(request.argumentsJson)) {
+            return "审批记录的参数摘要校验不一致，审批可能已损坏"
+        }
+        val currentWorkspace = sessionDao.findById(request.sessionId)?.workspace.orEmpty()
+        if (currentWorkspace != request.workspace) {
+            return "会话工作区已变更（审批时：${request.workspace.ifBlank { "无" }}，当前：${currentWorkspace.ifBlank { "无" }}）"
+        }
+        val boundOperationId = request.operationId
+        if (boundOperationId != null && !operationCoordinator.operationExists(boundOperationId)) {
+            return "该审批所属的运行已结束或被新运行接管"
+        }
+        return null
     }
 
     private suspend fun appendCapabilityEvents(

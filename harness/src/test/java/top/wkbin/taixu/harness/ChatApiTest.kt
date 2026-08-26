@@ -196,4 +196,88 @@ class ChatApiTest {
         assertEquals("base", call.name)
         assertEquals("""{"command":"abc"}""", call.argumentsJson)
     }
+
+    @Test
+    fun `parses usage from non-stream response`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"choices":[{"message":{"role":"assistant","content":"ok"}}],
+                   "usage":{"prompt_tokens":120,"completion_tokens":45,
+                     "prompt_tokens_details":{"cached_tokens":80},
+                     "completion_tokens_details":{"reasoning_tokens":12}}}""",
+            ),
+        )
+        val result = api.chat(model(), emptyList())
+        assertEquals(120L, result.usage.inputTokens)
+        assertEquals(45L, result.usage.outputTokens)
+        assertEquals(12L, result.usage.reasoningTokens)
+        assertEquals(80L, result.usage.cacheReadTokens)
+        assertTrue(result.usage.hasData)
+    }
+
+    @Test
+    fun `parses deepseek style cache fields from non-stream response`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"choices":[{"message":{"role":"assistant","content":"ok"}}],
+                   "usage":{"prompt_tokens":100,"completion_tokens":20,
+                     "prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":40}}""",
+            ),
+        )
+        val result = api.chat(model(), emptyList())
+        assertEquals(60L, result.usage.cacheReadTokens)
+        assertEquals(40L, result.usage.cacheWriteTokens)
+    }
+
+    @Test
+    fun `parses usage from final stream chunk and requests include_usage`() = runBlocking {
+        val body = """
+            data: {"choices":[{"delta":{"content":"你好"}}]}
+            data: {"choices":[{"delta":{"content":"世界"}}]}
+            data: {"choices":[],"usage":{"prompt_tokens":31,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":16},"completion_tokens_details":{"reasoning_tokens":3}}}
+            data: [DONE]
+        """.trimIndent()
+        server.enqueue(MockResponse().setBody(body))
+        val result = api.chatStream(model(), emptyList()) { }
+        assertEquals(31L, result.usage.inputTokens)
+        assertEquals(7L, result.usage.outputTokens)
+        assertEquals(3L, result.usage.reasoningTokens)
+        assertEquals(16L, result.usage.cacheReadTokens)
+        val recorded = server.takeRequest()
+        assertTrue(recorded.body.readUtf8().contains("\"stream_options\":{\"include_usage\":true}"))
+    }
+
+    @Test
+    fun `retries without stream_options when provider rejects it`() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(400)
+                .setBody("""{"error":{"message":"Extra inputs are not permitted: stream_options"}}"""),
+        )
+        server.enqueue(
+            MockResponse().setBody(
+                """
+                data: {"choices":[{"delta":{"content":"ok"}}]}
+                data: [DONE]
+                """.trimIndent(),
+            ),
+        )
+        val result = api.chatStream(model(), emptyList()) { }
+        assertEquals("ok", result.content)
+        server.takeRequest() // 第一次带 stream_options 的请求
+        val retry = server.takeRequest()
+        assertFalse(retry.body.readUtf8().contains("stream_options"))
+    }
+
+    @Test
+    fun `propagates other stream errors without retry`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"error":"server exploded"}"""))
+        var thrown: Throwable? = null
+        try {
+            api.chatStream(model(), emptyList()) { }
+        } catch (t: Throwable) {
+            thrown = t
+        }
+        assertTrue(thrown is IllegalStateException)
+        assertEquals(1, server.requestCount)
+    }
 }

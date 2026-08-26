@@ -2,6 +2,7 @@ package top.wkbin.taixu.harness.subagent
 
 import java.util.UUID
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -18,6 +19,7 @@ import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.harness.effects.ToolReplayPolicy
 import top.wkbin.taixu.harness.operation.OperationCoordinator
 import top.wkbin.taixu.harness.session.SessionTreeStore
+import top.wkbin.taixu.harness.validation.ToolSchemaValidator
 
 data class SubagentLaneResult(
     val success: Boolean,
@@ -25,11 +27,17 @@ data class SubagentLaneResult(
     val toolCallCount: Int,
 )
 
-/** Headless lane interpreter used by subagents; it shares tree history but owns its operation. */
+/**
+ * Headless lane interpreter used by subagents; it shares tree history but owns its operation.
+ *
+ * [ToolExecutor] 以 [Provider] 注入以打断 Hilt 依赖环：
+ * ToolExecutor → SubagentOrchestrator → SubagentLaneRunner → ToolExecutor。
+ * 工具只在 [run] 执行期才实际取用，构造期延迟解析是安全的。
+ */
 @Singleton
 class SubagentLaneRunner @Inject constructor(
     private val providerClient: ProviderClient,
-    private val toolExecutor: ToolExecutor,
+    private val toolExecutor: Provider<ToolExecutor>,
     private val treeStore: SessionTreeStore,
     private val operations: OperationCoordinator,
     private val json: Json,
@@ -49,12 +57,32 @@ class SubagentLaneRunner @Inject constructor(
                     text.append(it)
                 }
                 val assistantText = text.toString().ifBlank { result.content.orEmpty() }
+                val usageEntity = result.usage.takeIf { it.hasData }?.let {
+                    operations.usageEntity(
+                        sessionId = sessionId,
+                        operationId = operationId,
+                        entryId = responseId.takeIf { assistantText.isNotBlank() },
+                        provider = model.provider,
+                        modelId = model.model,
+                        usage = it,
+                    )
+                }
                 if (assistantText.isNotBlank()) {
-                    val assistant = AssistantText(responseId, now(), assistantText, result.reasoningContent)
-                    operations.providerSettled(operationId, assistant, round = round)
+                    val assistant = AssistantText(
+                        id = responseId,
+                        createdAt = now(),
+                        text = assistantText,
+                        reasoning = result.reasoningContent,
+                        modelId = model.model,
+                        providerId = model.provider,
+                        promptTokens = result.usage.inputTokens.takeIf { it > 0 }?.toInt(),
+                        completionTokens = result.usage.outputTokens.takeIf { it > 0 }?.toInt(),
+                        cachedTokens = result.usage.cacheReadTokens.takeIf { it > 0 }?.toInt(),
+                    )
+                    operations.providerSettled(operationId, assistant, usage = usageEntity, round = round)
                     finalText = assistantText
                 } else {
-                    operations.providerSettled(operationId, null, round = round)
+                    operations.providerSettled(operationId, null, usage = usageEntity, round = round)
                 }
                 if (result.toolCalls.isEmpty()) {
                     operations.finish(sessionId, "completed", responseId, laneName = laneName)
@@ -71,11 +99,21 @@ class SubagentLaneRunner @Inject constructor(
                         continue
                     }
                     val call = ToolCall(spec.id, now(), tool, args, result.reasoningContent, rawName)
+                    val schemaProblems = ToolSchemaValidator.problemsFor(rawName, args, model.dynamicMcpTools)
+                    if (schemaProblems.isNotEmpty()) {
+                        operations.toolIntent(operationId, call, spec.argumentsJson, ToolReplayPolicy.forTool(tool, rawName), round)
+                        val rejected = ToolResult(
+                            UUID.randomUUID().toString(), now(), spec.id, false,
+                            "工具参数校验未通过：${schemaProblems.joinToString("；")}。请修正参数后重新调用。",
+                        )
+                        operations.toolSettled(operationId, rejected, round)
+                        continue
+                    }
                     operations.toolIntent(operationId, call, spec.argumentsJson, ToolReplayPolicy.forTool(tool, rawName), round)
                     val outcome = if (tool == HarnessTool.SUBAGENT) {
                         ToolResult(UUID.randomUUID().toString(), now(), call.id, false, "子智能体 Lane 禁止再次派发子智能体")
                     } else {
-                        toolExecutor.execute(call, sessionId, workspace)
+                        toolExecutor.get().execute(call, sessionId, workspace, operationId = operationId)
                     }
                     val settled = if (outcome.awaitingApproval) {
                         outcome.copy(success = false, awaitingApproval = false, output = "子智能体工具需要用户审批，已停止该工具调用")
