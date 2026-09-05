@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import top.wkbin.taixu.R
 import top.wkbin.taixu.runtime.shell.ProcessRegistry
 import top.wkbin.taixu.runtime.SshServiceManager
+import top.wkbin.taixu.runtime.FtpServiceManager
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -27,6 +28,7 @@ class RuntimeForegroundService : Service() {
     @Inject lateinit var processRegistry: ProcessRegistry
     @Inject lateinit var localServiceLauncher: LocalServiceLauncher
     @Inject lateinit var sshServiceManager: SshServiceManager
+    @Inject lateinit var ftpServiceManager: FtpServiceManager
     /** 停止后的沙箱进程清理作用域：独立于服务生命周期，服务销毁后也要跑完。 */
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -38,6 +40,7 @@ class RuntimeForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         sshServiceManager.startObserving()
+        ftpServiceManager.startObserving()
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,

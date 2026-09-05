@@ -692,6 +692,78 @@ class SettingsDataStore @Inject constructor(
         .first()
         ?.let(::decodeProtectedValue)
 
+    // ==================== Linux FTP 远程访问 ====================
+
+    /** FTP 配置按发行版隔离。 */
+    fun ftpEnabled(distroId: String): Flow<Boolean> = context.settingsDataStore.data.map {
+        it[booleanPreferencesKey("ftp_${normalizedDistroId(distroId)}_enabled")] ?: false
+    }
+
+    suspend fun setFtpEnabled(distroId: String, enabled: Boolean) {
+        context.settingsDataStore.edit {
+            it[booleanPreferencesKey("ftp_${normalizedDistroId(distroId)}_enabled")] = enabled
+        }
+    }
+
+    fun ftpPort(distroId: String): Flow<Int> = context.settingsDataStore.data.map {
+        (it[intPreferencesKey("ftp_${normalizedDistroId(distroId)}_port")] ?: 2121)
+            .coerceIn(1024, 65535)
+    }
+
+    suspend fun setFtpPort(distroId: String, port: Int) {
+        require(port in 1024..65535) { "FTP 端口必须在 1024..65535 之间" }
+        context.settingsDataStore.edit {
+            it[intPreferencesKey("ftp_${normalizedDistroId(distroId)}_port")] = port
+        }
+    }
+
+    fun ftpUsername(distroId: String): Flow<String> = context.settingsDataStore.data.map {
+        it[stringPreferencesKey("ftp_${normalizedDistroId(distroId)}_username")] ?: "root"
+    }
+
+    suspend fun setFtpUsername(distroId: String, username: String) {
+        val normalized = username.trim().ifBlank { "root" }
+        context.settingsDataStore.edit {
+            it[stringPreferencesKey("ftp_${normalizedDistroId(distroId)}_username")] = normalized
+        }
+    }
+
+    fun ftpAnonymousEnabled(distroId: String): Flow<Boolean> = context.settingsDataStore.data.map {
+        it[booleanPreferencesKey("ftp_${normalizedDistroId(distroId)}_anonymous_enabled")] ?: false
+    }
+
+    suspend fun setFtpAnonymousEnabled(distroId: String, enabled: Boolean) {
+        context.settingsDataStore.edit {
+            it[booleanPreferencesKey("ftp_${normalizedDistroId(distroId)}_anonymous_enabled")] = enabled
+        }
+    }
+
+    fun ftpReadOnly(distroId: String): Flow<Boolean> = context.settingsDataStore.data.map {
+        it[booleanPreferencesKey("ftp_${normalizedDistroId(distroId)}_read_only")] ?: false
+    }
+
+    suspend fun setFtpReadOnly(distroId: String, readOnly: Boolean) {
+        context.settingsDataStore.edit {
+            it[booleanPreferencesKey("ftp_${normalizedDistroId(distroId)}_read_only")] = readOnly
+        }
+    }
+
+    fun ftpPasswordConfigured(distroId: String): Flow<Boolean> = context.settingsDataStore.data.map {
+        !it[stringPreferencesKey("ftp_${normalizedDistroId(distroId)}_password")].isNullOrBlank()
+    }
+
+    suspend fun setFtpPassword(distroId: String, password: String?) {
+        val preferenceKey = stringPreferencesKey("ftp_${normalizedDistroId(distroId)}_password")
+        context.settingsDataStore.edit {
+            if (password == null) it.remove(preferenceKey) else it[preferenceKey] = encodeProtectedValue(password)
+        }
+    }
+
+    suspend fun readFtpPassword(distroId: String): String? = context.settingsDataStore.data
+        .map { it[stringPreferencesKey("ftp_${normalizedDistroId(distroId)}_password")] }
+        .first()
+        ?.let(::decodeProtectedValue)
+
     /** 同步读取插件启用状态（供运行时启停判断）。 */
     suspend fun isPluginEnabled(pluginId: String): Boolean = allPlugins.first().any { it.id == pluginId && it.isEnabled }
 

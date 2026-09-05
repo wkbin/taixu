@@ -440,6 +440,7 @@ fun LinuxEnvironmentSettingsScreen(
     onOpenAppManagement: () -> Unit,
     onOpenEnvironmentVariables: () -> Unit,
     onOpenSshSettings: () -> Unit,
+    onOpenFtpSettings: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val executionMode by viewModel.executionMode.collectAsStateWithLifecycle()
@@ -551,6 +552,13 @@ fun LinuxEnvironmentSettingsScreen(
                         title = "SSH 远程访问",
                         subtitle = "公钥认证 · 端口与局域网监听 · 随运行时启动",
                         onClick = onOpenSshSettings,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingsRow(
+                        icon = RuntimeIconName.FolderOpen,
+                        title = "FTP 远程文件访问",
+                        subtitle = "挂载 Linux 根目录 (/) · FileZilla / 资源管理器直连",
+                        onClick = onOpenFtpSettings,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     SettingsRow(

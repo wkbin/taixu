@@ -101,6 +101,25 @@ class SshPreferences @Inject constructor(private val store: SettingsDataStore) {
     suspend fun readPassword(distroId: String) = store.readSshPassword(distroId)
 }
 
+/** Per-distro FTP settings exposed to the runtime FTP service and settings UI. */
+@Singleton
+class FtpPreferences @Inject constructor(private val store: SettingsDataStore) {
+    fun enabled(distroId: String) = store.ftpEnabled(distroId)
+    fun port(distroId: String) = store.ftpPort(distroId)
+    fun username(distroId: String) = store.ftpUsername(distroId)
+    fun anonymousEnabled(distroId: String) = store.ftpAnonymousEnabled(distroId)
+    fun readOnly(distroId: String) = store.ftpReadOnly(distroId)
+    fun passwordConfigured(distroId: String) = store.ftpPasswordConfigured(distroId)
+
+    suspend fun setEnabled(distroId: String, enabled: Boolean) = store.setFtpEnabled(distroId, enabled)
+    suspend fun setPort(distroId: String, port: Int) = store.setFtpPort(distroId, port)
+    suspend fun setUsername(distroId: String, username: String) = store.setFtpUsername(distroId, username)
+    suspend fun setAnonymousEnabled(distroId: String, enabled: Boolean) = store.setFtpAnonymousEnabled(distroId, enabled)
+    suspend fun setReadOnly(distroId: String, readOnly: Boolean) = store.setFtpReadOnly(distroId, readOnly)
+    suspend fun setPassword(distroId: String, password: String?) = store.setFtpPassword(distroId, password)
+    suspend fun readPassword(distroId: String) = store.readFtpPassword(distroId)
+}
+
 data class LegacyEnvironmentVariable(
     val metadata: top.wkbin.taixu.core.model.EnvironmentVariable,
     val value: String,
