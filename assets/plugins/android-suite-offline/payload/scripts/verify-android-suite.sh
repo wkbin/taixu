@@ -43,7 +43,15 @@ test -n "$NDK_STRIP" || fail "missing NDK llvm-strip"
 require_executable "$NDK_STRIP"
 require_aarch64 "$NDK_STRIP"
 require_executable /opt/taixu/bin/adb
-require_aarch64 /opt/taixu/bin/adb
+if is_aarch64_elf /opt/taixu/bin/adb; then
+    :
+else
+    # /opt/taixu/bin/adb 为智能连接包装脚本，校验底层真实 ELF
+    REAL_ADB="${TAIXU_TOOL_DIR:-/opt/taixu/tools/android-suite-offline}/bin/adb"
+    test -x "$REAL_ADB" || REAL_ADB="/opt/android-sdk/platform-tools/adb"
+    require_executable "$REAL_ADB"
+    require_aarch64 "$REAL_ADB"
+fi
 require_command /opt/taixu/bin/java -version
 require_command /opt/taixu/bin/gradle --version
 require_command /opt/taixu/bin/cmake --version

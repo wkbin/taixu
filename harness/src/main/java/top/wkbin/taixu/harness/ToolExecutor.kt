@@ -240,6 +240,7 @@ class ToolExecutor @Inject constructor(
 
         // Logcat 优先走内置无线 ADB，不依赖 Shizuku/Root；不可用时再回退原特权通道。
         if (action == "logcat" && embeddedAdbManager != null) {
+            val explicitPort = args["port"]?.jsonPrimitive?.content?.trim()?.toIntOrNull()
             val adbResult = embeddedAdbManager.captureLogcat(
                 EmbeddedAdbManager.LogcatRequest(
                     packageName = args["package"]?.jsonPrimitive?.content?.trim().orEmpty(),
@@ -248,6 +249,7 @@ class ToolExecutor @Inject constructor(
                     keyword = args["keyword"]?.jsonPrimitive?.content?.trim().orEmpty(),
                     lines = optionalLong(args, "tail_lines", 200L, 1L, 2_000L).toInt(),
                 ),
+                explicitPort = explicitPort,
             )
             if (adbResult.success) {
                 return true to "mode wireless-adb · exit ${adbResult.exitCode ?: 0}\n${adbResult.output.trim()}"

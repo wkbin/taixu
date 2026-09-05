@@ -7,6 +7,6 @@
     <string name="harness_prompt_subagent_lane_system">你是隔离 Lane 中运行的子智能体。聚焦指派任务，不得派发更多子智能体。</string>
     <string name="harness_prompt_subagent_trigger_manual">仅当用户明确要求并行处理、分头检查或使用子智能体时调用 invoke_subagent；否则由主智能体直接完成。</string>
     <string name="harness_prompt_privilege_unavailable">## Android 宿主权限\n权限状态暂不可读取；不要调用 host exec，可先调用 host(status)。</string>
-    <string name="harness_prompt_privilege_proot">## Android 宿主权限\n当前实际生效模式为 PRoot/普通应用权限。host exec 不可用；系统设置、pm、input 等宿主操作不要用 base 冒充执行，可提示用户先到设置授权 Shizuku 或 Root。logcat 可在开发者控制台完成一次无线 ADB 配对后直接使用。</string>
+    <string name="harness_prompt_privilege_proot">## Android 宿主权限\n当前实际生效模式为 PRoot/普通应用权限。host exec 不可用；系统设置、pm、input 等宿主操作不要用 base 冒充执行，可提示用户先到设置授权 Shizuku 或 Root。抓取日志（logcat）直接使用无线 ADB（host logcat 或 logcat-grabber），无需 Shizuku/Root。</string>
     <string name="harness_prompt_privilege_render_failed">## Android 宿主权限\n特权能力章节加载失败，实际可用性未知：先调用 host(status) 实测；返回错误则告知用户到设置页重新授权 Shizuku 或 Root。不要用 base 执行宿主命令。</string>
 </resources>

@@ -17,7 +17,7 @@ class BuildGuardAssetTest {
 
     @Test
     fun managedBuildEntriesHavePortableShebangs() {
-        listOf("gradle", "gradlew", "flutter", "taixu-build", "taixu-build-guard").forEach { name ->
+        listOf("gradle", "gradlew", "flutter", "taixu-build", "taixu-build-guard", "adb", "logcat-grabber").forEach { name ->
             val script = File(assets, "bin/$name")
             assertTrue("missing $script", script.isFile)
             assertTrue("$name must use /bin/sh", script.readText().startsWith("#!/bin/sh\n"))

@@ -508,6 +508,10 @@ ln -sfn "$JDK_HOME/bin/java" "$TOOL_DIR/bin/java"
 ln -sfn "$JDK_HOME/bin/javac" "$TOOL_DIR/bin/javac"
 ln -sfn "/opt/gradle-$GRADLE_VERSION/bin/gradle" "$TOOL_DIR/bin/gradle"
 for command in java javac gradle cmake ninja adb flutter dart rustc cargo rustdoc apksigner zipalign jarsigner keytool aapt aapt2 dexdump readelf objdump nm strings cxxfilt uber-apk-signer smali baksmali taixu-apk-sign jadx apktool d2j-dex2jar d2j-baksmali d2j-smali rg; do
+    if [ "$command" = "adb" ] && [ -f "/opt/taixu/bin/adb" ] && ! [ -L "/opt/taixu/bin/adb" ]; then
+        # 保留 /opt/taixu/bin/adb 智能连接包装脚本
+        continue
+    fi
     if [ -e "$TOOL_DIR/bin/$command" ]; then ln -sfn "$TOOL_DIR/bin/$command" "/opt/taixu/bin/$command"; fi
 done
 

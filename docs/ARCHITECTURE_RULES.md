@@ -65,3 +65,11 @@
 - ZIP 导入必须使用 `WorkspaceManager.importProjectArchive()`，禁止直接解压不受信路径；Git HTTP(S) 与 SSH URL 必须按用户选择的 transport 分别校验。
 - 导入类型写入 `.taixu-project.properties`，不能只靠文件扩展名或目录内容重新猜测用户选择。
 - 同一插件 ID + version 已存在时返回“已导入”，不得递归覆盖现有 payload；安装框架应先保证 `$toolDir/bin` 存在。
+
+---
+
+## 8. 无线 ADB 与 PRoot 守护进程约束 (Wireless ADB & PRoot Daemon Strategy)
+
+- **PRoot ADB 进程隔离**：PRoot 沙箱内无持久 init/systemd 守护进程，后台 `adb fork-server` 无法跨独立命令存活，每次调用后都会销毁。命令行 ADB 操作需在单条执行中完成 `connect + 操作`（沙箱 `/opt/taixu/bin/adb` 封装脚本已内置自动 connect），或优先通过 `HostBridge` (`logcat-grabber` / `taixu-host logcat`) 经由宿主常驻 Kadb 连接。
+- **日志抓取免特权**：抓取日志（logcat）通过内置无线 ADB 协议与 HostBridge 桥接，**完全不依赖 Shizuku 或 Root 权限**。AI Agent 在遇到抓取日志/排查崩溃任务时，应直接使用 `host(action="logcat", ...)` 或 `logcat-grabber <包名> [-P 端口]`，严禁要求用户先开启 Shizuku/Root 或做多余权限排查。
+

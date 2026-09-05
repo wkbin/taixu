@@ -1,0 +1,64 @@
+#!/bin/sh
+# TaiXu ADB Wrapper — 解决 PRoot 下 ADB daemon 独立调用重启导致断连的问题
+# 在同一条命令执行周期内自动完成 connect + 目标操作执行
+set -u
+
+REAL_ADB=""
+for candidate in     "${TAIXU_TOOL_DIR:-/opt/taixu/tools}/android-suite-offline/bin/adb"     "${ANDROID_HOME:-/opt/android-sdk}/platform-tools/adb"     /usr/bin/adb     /bin/adb; do
+    if [ -x "$candidate" ]; then
+        real_target=$(readlink -f "$candidate" 2>/dev/null || echo "$candidate")
+        if [ "$real_target" != "/opt/taixu/bin/adb" ] && [ "$real_target" != "/usr/local/bin/adb" ] && [ -x "$real_target" ]; then
+            REAL_ADB="$candidate"
+            break
+        fi
+    fi
+done
+
+if [ -z "$REAL_ADB" ]; then
+    case "${1:-}" in
+        logcat)
+            shift
+            exec /opt/taixu/bin/logcat-grabber "" "$@"
+            ;;
+        shell)
+            shift
+            exec /opt/taixu/bin/taixu-host shell "$@"
+            ;;
+        install)
+            shift
+            exec /opt/taixu/bin/taixu-host install-apk "$@"
+            ;;
+        *)
+            echo "错误: 未找到本地 ARM64 adb 二进制文件，请安装 android-suite-offline 或使用 taixu-host / logcat-grabber" >&2
+            exit 127
+            ;;
+    esac
+fi
+
+case "${1:-}" in
+    ""|version|--version|-v|help|--help|-h|start-server|kill-server|connect|disconnect|pair)
+        exec "$REAL_ADB" "$@"
+        ;;
+esac
+
+PORT=""
+if [ -f /opt/taixu/.adb-port ]; then
+    PORT=$(cat /opt/taixu/.adb-port 2>/dev/null | tr -d '[:space:]')
+fi
+if [ -z "$PORT" ]; then
+    BRIDGE_KEY=""
+    [ -f /opt/taixu/.bridge-key ] && BRIDGE_KEY=$(cat /opt/taixu/.bridge-key 2>/dev/null | tr -d '[:space:]')
+    PORT=$(curl -s http://127.0.0.1:7980/api/health ${BRIDGE_KEY:+-H "Authorization: Bearer $BRIDGE_KEY"} 2>/dev/null | grep -o '"adbPort":[0-9]*' | cut -d':' -f2 || true)
+fi
+
+HOST="127.0.0.1"
+if [ -f /opt/taixu/.adb-host ]; then
+    H=$(cat /opt/taixu/.adb-host 2>/dev/null | tr -d '[:space:]')
+    [ -n "$H" ] && HOST="$H"
+fi
+
+if [ -n "$PORT" ] && [ "$PORT" != "0" ]; then
+    "$REAL_ADB" connect "$HOST:$PORT" >/dev/null 2>&1 || true
+fi
+
+exec "$REAL_ADB" "$@"

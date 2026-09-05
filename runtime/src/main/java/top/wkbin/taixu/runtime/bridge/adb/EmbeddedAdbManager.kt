@@ -46,6 +46,7 @@ import top.wkbin.taixu.core.datastore.RuntimePreferences
 class EmbeddedAdbManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val preferences: RuntimePreferences,
+    private val pathManager: top.wkbin.taixu.runtime.RuntimePathManager,
 ) {
     sealed interface ConnectionState {
         data object Disconnected : ConnectionState
@@ -295,13 +296,18 @@ class EmbeddedAdbManager @Inject constructor(
 
     // ── 连接 ────────────────────────────────────────────────────────────────
 
+    // ── 连接 ────────────────────────────────────────────────────────────────
+
     /** 优先连接当前 mDNS 端点；发现不可用时才回退到上次保存的 localhost 端口。 */
-    suspend fun connect(): Result<Unit> = mutex.withLock {
+    suspend fun connect(explicitPort: Int? = null): Result<Unit> = mutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
                 val discovered = connectEndpointMap.values.toList()
                 val savedPort = preferences.adbWirelessPort.first()
                 val candidates = buildList {
+                    if (explicitPort != null && explicitPort in VALID_PORTS) {
+                        add(Endpoint("explicit", LOOPBACK, explicitPort))
+                    }
                     addAll(discovered)
                     if (savedPort in VALID_PORTS && none { it.port == savedPort }) {
                         add(Endpoint("saved", LOOPBACK, savedPort))
@@ -339,7 +345,10 @@ class EmbeddedAdbManager @Inject constructor(
             check(probe.output.trim() == "ok") { "ADB 链路探活失败" }
             client = connected
             _state.value = ConnectionState.Connected(endpoint.host, endpoint.port)
-            scope.launch { preferences.setAdbWirelessPort(endpoint.port) }
+            scope.launch {
+                preferences.setAdbWirelessPort(endpoint.port)
+                persistAdbEndpoint(endpoint.host, endpoint.port)
+            }
             Log.i(TAG, "embedded adb connected on ${endpoint.host}:${endpoint.port}")
         } catch (error: Throwable) {
             connected.close()
@@ -350,13 +359,42 @@ class EmbeddedAdbManager @Inject constructor(
     fun disconnect() {
         closeClient()
         _state.value = ConnectionState.Disconnected
+        scope.launch { clearAdbEndpoint() }
+    }
+
+    private fun persistAdbEndpoint(host: String, port: Int) {
+        runCatching {
+            val distroIds = pathManager.listInstalledDistroIds()
+            for (distroId in distroIds) {
+                val taixuRoot = pathManager.taixuRootDir(distroId)
+                if (taixuRoot.exists()) {
+                    File(taixuRoot, ".adb-port").writeText(port.toString())
+                    File(taixuRoot, ".adb-host").writeText(host)
+                }
+            }
+        }.onFailure { Log.w(TAG, "Failed to persist adb endpoint to sandboxes", it) }
+    }
+
+    private fun clearAdbEndpoint() {
+        runCatching {
+            val distroIds = pathManager.listInstalledDistroIds()
+            for (distroId in distroIds) {
+                val taixuRoot = pathManager.taixuRootDir(distroId)
+                if (taixuRoot.exists()) {
+                    File(taixuRoot, ".adb-port").delete()
+                    File(taixuRoot, ".adb-host").delete()
+                }
+            }
+        }.onFailure { Log.w(TAG, "Failed to clear adb endpoint from sandboxes", it) }
     }
 
     // ── Shell / Logcat ───────────────────────────────────────────────────────
 
-    suspend fun executeShell(command: String): ShellOutcome {
-        if (client == null) {
-            val connection = connect()
+    suspend fun executeShell(command: String, explicitPort: Int? = null): ShellOutcome {
+        val currentClient = client
+        val currentConnectedPort = (_state.value as? ConnectionState.Connected)?.port
+        if (currentClient == null || (explicitPort != null && currentConnectedPort != explicitPort)) {
+            val connection = if (explicitPort != null) connect(explicitPort) else connect()
             if (connection.isFailure) {
                 return ShellOutcome(
                     null,
@@ -381,7 +419,7 @@ class EmbeddedAdbManager @Inject constructor(
     }
 
     /** 抓取目标应用日志；关键词在本进程过滤，避免把用户文本拼进 shell。 */
-    suspend fun captureLogcat(request: LogcatRequest): ShellOutcome {
+    suspend fun captureLogcat(request: LogcatRequest, explicitPort: Int? = null): ShellOutcome {
         require(request.packageName.isBlank() || PACKAGE_NAME.matches(request.packageName)) { "包名格式不合法" }
         require(request.tag.isBlank() || LOGCAT_TAG.matches(request.tag)) { "Logcat Tag 格式不合法" }
         require(request.priority.uppercaseChar() in PRIORITIES) { "日志优先级无效" }
@@ -399,7 +437,7 @@ class EmbeddedAdbManager @Inject constructor(
                 "if [ -z \"\$pid\" ]; then echo '目标应用未运行：${request.packageName}'; exit 3; fi; " +
                 "$logcat --pid=\"\$pid\" $tagArgs"
         }
-        val outcome = executeShell(command)
+        val outcome = executeShell(command, explicitPort)
         if (!outcome.success || request.keyword.isBlank()) return outcome
         val filtered = outcome.output.lineSequence()
             .filter { it.contains(request.keyword, ignoreCase = true) }

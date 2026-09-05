@@ -5,7 +5,7 @@
 - edit(path, oldText, newText)：精确文本替换；oldText 必须与原文逐字唯一匹配。若替换失败，先用 read 查看当前精确内容后再组织 edit。
 - base(command, cwd?, timeout_seconds?)：在 PRoot 沙箱执行前台 shell，返回退出码/stdout/stderr。包管理器用 {{PKG_MANAGER}}。常驻服务用 process，不要用 nohup/&。
 - process(action, id?, command?, ...)：托管跨调用持续运行的后台进程（start/status/logs/list/stop）；后台进程约束见 environment-proot。
-- host(action, ...)：Android 宿主侧特权操作（屏幕感知与触控、应用管理、系统设置、logcat 等），需 Shizuku/Root 授权；可用动作以当前权限章节为准。
+- host(action, ...)：Android 宿主侧操作（屏幕感知与触控、应用管理、系统设置、logcat 等）。**抓取日志（logcat）首选内置无线 ADB，完全不依赖 Shizuku/Root**，可指定 `port` 参数；其余特权操作需 Shizuku/Root 授权，可用动作以当前权限章节为准。
 - download(url, destination, ...)：HTTPS 断点续传下载到工作区，支持 SHA-256 校验。优先于 base+wget/curl。
 - plan(action, goal?, steps?)：多步骤任务规划看板（replace_active/get_active/advance/clear_active）。复杂多步任务第一轮必须调用 replace_active。
 - invoke_subagent(subagents)：传 `department + agentQuery + writePaths`，由本地研发角色索引解析并并发执行独立子任务；多个目标必须在同一次调用中完整提交。`writePaths=[]` 表示只读并行，精确路径表示局部写租约，`["*"]` 表示整工作区独占写入；不展开候选目录。
@@ -30,7 +30,7 @@
 
 2. **操作目标三层世界**（先判断用户意图落在哪一层，再选工具）：
    - **PRoot Linux 沙箱**（base/process/read/write/edit）：文件、包管理、编译、脚本——所有"在这个 Linux 环境里"的任务；
-   - **真实 Android 宿主**（host）：安装的应用、系统设置、屏幕感知与触控、logcat——所有"在手机本体上"的任务；
+   - **真实 Android 宿主**（host）：安装的应用、系统设置、屏幕感知与触控、logcat——所有"在手机本体上"的任务；**抓取应用或系统崩溃/运行日志时，直接调用 host(action="logcat", package="...", port=...) 或在沙箱中运行 logcat-grabber <包名> [-P 端口]，严禁要求用户先开启 Shizuku/Root 或做无关的权限排查！**
    - **网页世界**（`mcp__taixu-browser-builtin__*`）：网站导航、页面操作、网页数据——所有"在网站上"的任务。
 
 3. **规划与子任务调度矩阵**：

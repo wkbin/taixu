@@ -299,13 +299,13 @@ class HostBridge @Inject constructor(
     }
 
     private suspend fun handleShell(body: String): HttpResponse {
-        val command = try {
-            val obj = json.parseToJsonElement(body).jsonObject
-            obj["command"]?.jsonPrimitive?.content
+        val obj = try {
+            json.parseToJsonElement(body).jsonObject
         } catch (e: Exception) {
             return HttpResponse(400, errorJson("Invalid JSON body: ${e.message}"))
         }
 
+        val command = obj["command"]?.jsonPrimitive?.content
         if (command.isNullOrBlank()) {
             return HttpResponse(400, errorJson("Missing 'command' field"))
         }
@@ -321,7 +321,8 @@ class HostBridge @Inject constructor(
                 put("channel", "privilege")
             }
         } else {
-            val adbResult = embeddedAdbManager.executeShell(command)
+            val explicitPort = obj["port"]?.jsonPrimitive?.content?.toIntOrNull()
+            val adbResult = embeddedAdbManager.executeShell(command, explicitPort)
             buildJsonObject {
                 put("success", adbResult.success)
                 put("exitCode", adbResult.exitCode ?: if (adbResult.success) 0 else 1)
@@ -354,6 +355,7 @@ class HostBridge @Inject constructor(
         val priority = obj["priority"]?.jsonPrimitive?.content?.trim()?.uppercase()?.firstOrNull() ?: 'V'
         val keyword = obj["keyword"]?.jsonPrimitive?.content?.trim().orEmpty()
         val lines = obj["lines"]?.jsonPrimitive?.content?.toIntOrNull() ?: 200
+        val explicitPort = obj["port"]?.jsonPrimitive?.content?.toIntOrNull()
 
         val result = embeddedAdbManager.captureLogcat(
             EmbeddedAdbManager.LogcatRequest(
@@ -363,6 +365,7 @@ class HostBridge @Inject constructor(
                 keyword = keyword,
                 lines = lines,
             ),
+            explicitPort = explicitPort,
         )
 
         return HttpResponse(200, buildJsonObject {
