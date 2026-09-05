@@ -32,7 +32,10 @@ class AgentModelDiscovery @Inject constructor(
         }
         val targetUrl = ProviderEndpointPolicy.normalizeUrl(url)
         require(targetUrl.isNotBlank() && ProviderEndpointPolicy.isSafeBaseUrl(targetUrl)) { "模型发现地址不安全或为空" }
-        val isAnthropic = targetUrl.contains("api.anthropic.com")
+        val isAnthropic = provider.protocol == ProviderProtocol.ANTHROPIC ||
+            targetUrl.contains("api.anthropic.com") ||
+            provider.name.contains("anthropic", ignoreCase = true) ||
+            provider.name.contains("claude", ignoreCase = true)
         val request = Request.Builder().url(targetUrl)
             .apply {
                 when {

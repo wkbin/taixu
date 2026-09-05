@@ -53,6 +53,34 @@ class AgentModelDiscoveryTest {
         assertEquals(listOf("chat-model"), discovery().discover(provider(), server.url("/v1").toString(), null))
     }
 
+    @Test
+    fun `anthropic protocol sends x-api-key and version on non-official domain`() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"data\":[{\"id\":\"claude-3-7-sonnet\"}]}"),
+        )
+
+        val anthropicProvider = AgentProviderDefinition(
+            id = "custom_anthropic",
+            name = "自定义 Anthropic 兼容接口",
+            baseUrl = "",
+            group = ProviderGroup.CUSTOM,
+            protocol = ProviderProtocol.ANTHROPIC,
+            apiKeyOptional = true,
+        )
+
+        val result = discovery().discover(anthropicProvider, server.url("/v1").toString(), "test-key")
+        assertEquals(listOf("claude-3-7-sonnet"), result)
+
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/v1/models", request.path)
+        assertEquals("test-key", request.getHeader("x-api-key"))
+        assertEquals("2023-06-01", request.getHeader("anthropic-version"))
+    }
+
     private fun discovery() = AgentModelDiscovery(OkHttpClient())
 
     private fun provider() = AgentProviderDefinition(

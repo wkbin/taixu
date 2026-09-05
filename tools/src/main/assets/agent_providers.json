@@ -10,6 +10,15 @@
       "apiKeyOptional": true
     },
     {
+      "id": "custom_anthropic",
+      "name": "自定义 Anthropic 兼容接口",
+      "group": "CUSTOM",
+      "baseUrl": "",
+      "modelsUrl": "",
+      "protocol": "ANTHROPIC",
+      "apiKeyOptional": true
+    },
+    {
       "id": "anthropic",
       "name": "Anthropic Claude",
       "group": "OFFICIAL",

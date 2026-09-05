@@ -155,7 +155,7 @@ fun ModelEditorScreen(
             testing = testing,
             testResult = testResult,
             discover = { provider, url, key -> viewModel.discoverModels(provider, url, key) },
-            test = viewModel::testConnection,
+            test = { url, model, key, respApi, providerId -> viewModel.testConnection(url, model, key, respApi, providerId) },
             save = { name, provider, modelsList, url, key, rpmLimit, temperature, maxTokens, topP, reasoningMode, reasoningEffort, toolCallMode, contextTokens, customHeaders, pureChatMode, visionEnabled, imageGenerationEnabled, responseApiEnabled ->
                 viewModel.saveModels(
                     id = modelId,
@@ -219,7 +219,7 @@ private fun ModelEditorContent(
     testing: Boolean,
     testResult: String?,
     discover: (String, String, String) -> Unit,
-    test: (String, String, String, Boolean) -> Unit,
+    test: (String, String, String, Boolean, String?) -> Unit,
     save: (String, String, List<String>, String, String, Int, Float?, Int?, Float?, String?, String?, String?, Int?, String, Boolean, Boolean, Boolean, Boolean) -> Unit,
     onFillFromJson: (String) -> AiModelProfileExport?,
     showImportDialog: Boolean,
@@ -536,7 +536,15 @@ private fun ModelEditorContent(
                         onValueChange = { url = it },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Base URL（接口端点）") },
-                        placeholder = { Text("https://api.openai.com/v1") },
+                        placeholder = {
+                            Text(
+                                if (provider.protocol == top.wkbin.taixu.core.tools.ProviderProtocol.ANTHROPIC) {
+                                    "https://api.anthropic.com/v1 或中转站地址"
+                                } else {
+                                    "https://api.openai.com/v1"
+                                }
+                            )
+                        },
                         isError = url.isNotBlank() && !urlValid,
                         supportingText = {
                             if (url.isNotBlank() && !urlValid) {
@@ -1167,7 +1175,7 @@ private fun ModelEditorContent(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 RuntimeOutlinedButton(
-                    onClick = { test(url, testModelTarget, combinedKey, responseApiEnabled) },
+                    onClick = { test(url, testModelTarget, combinedKey, responseApiEnabled, providerId) },
                     enabled = !testing && url.isNotBlank(),
                     modifier = Modifier.fillMaxWidth().height(44.dp),
                     shape = RoundedCornerShape(12.dp),

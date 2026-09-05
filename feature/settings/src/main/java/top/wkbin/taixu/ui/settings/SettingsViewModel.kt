@@ -1093,16 +1093,25 @@ class SettingsViewModel @Inject constructor(
         _modelDiscoveryError.value = null
     }
 
-    fun testConnection(baseUrl: String, model: String, apiKey: String, useResponsesApi: Boolean = false) {
+    fun testConnection(
+        baseUrl: String,
+        model: String,
+        apiKey: String,
+        useResponsesApi: Boolean = false,
+        providerId: String? = null,
+    ) {
+        val provider = providerId?.let { providerCatalogRepository.find(it) }
         viewModelScope.launch {
             _testingConnection.value = true
             _connectionResult.value = null
             runCatching {
                 connectionTester.test(
-                    baseUrl,
-                    model,
-                    profileWriter.parseApiKeys(apiKey).firstOrNull(),
-                    useResponsesApi,
+                    baseUrl = baseUrl,
+                    model = model,
+                    apiKey = profileWriter.parseApiKeys(apiKey).firstOrNull(),
+                    useResponsesApi = useResponsesApi,
+                    protocol = provider?.protocol ?: top.wkbin.taixu.core.tools.ProviderProtocol.OPENAI,
+                    providerName = provider?.name,
                 )
             }
                 .onSuccess { _connectionResult.value = "连接成功" }

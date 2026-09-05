@@ -63,4 +63,43 @@ class AgentModelConnectionTesterTest {
         assertTrue(body.contains("\"max_output_tokens\""))
         assertTrue(body.contains("\"type\":\"input_text\""))
     }
+
+    @Test
+    fun `anthropic protocol tests messages endpoint on non-official domain`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"content\":[{\"text\":\"OK\"}]}"))
+
+        tester.test(
+            baseUrl = server.url("/v1").toString(),
+            model = "claude-3-7-sonnet",
+            apiKey = "ant-secret",
+            protocol = ProviderProtocol.ANTHROPIC,
+        )
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/v1/messages", request.path)
+        assertEquals("ant-secret", request.getHeader("x-api-key"))
+        assertEquals("2023-06-01", request.getHeader("anthropic-version"))
+        val body = request.body.readUtf8()
+        assertTrue(body.contains("\"claude-3-7-sonnet\""))
+        assertTrue(body.contains("\"max_tokens\":16"))
+    }
+
+    @Test
+    fun `anthropic protocol tests catalog with x-api-key on non-official domain`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"data\":[]}"))
+
+        tester.test(
+            baseUrl = server.url("/v1").toString(),
+            model = "",
+            apiKey = "ant-secret",
+            protocol = ProviderProtocol.ANTHROPIC,
+        )
+
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/v1/models", request.path)
+        assertEquals("ant-secret", request.getHeader("x-api-key"))
+        assertEquals("2023-06-01", request.getHeader("anthropic-version"))
+    }
 }

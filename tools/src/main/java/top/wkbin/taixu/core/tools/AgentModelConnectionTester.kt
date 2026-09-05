@@ -16,10 +16,15 @@ class AgentModelConnectionTester @Inject constructor(private val http: OkHttpCli
         model: String,
         apiKey: String?,
         useResponsesApi: Boolean = false,
+        protocol: ProviderProtocol = ProviderProtocol.OPENAI,
+        providerName: String? = null,
     ) = withContext(Dispatchers.IO) {
         val cleanBaseUrl = ProviderEndpointPolicy.normalizeUrl(baseUrl)
         require(cleanBaseUrl.isNotBlank() && ProviderEndpointPolicy.isSafeBaseUrl(cleanBaseUrl)) { "Base URL 不安全或为空" }
-        val isAnthropic = cleanBaseUrl.trimEnd('/').contains("api.anthropic.com")
+        val isAnthropic = protocol == ProviderProtocol.ANTHROPIC ||
+            cleanBaseUrl.trimEnd('/').contains("api.anthropic.com") ||
+            providerName?.contains("anthropic", ignoreCase = true) == true ||
+            providerName?.contains("claude", ignoreCase = true) == true
         if (model.isBlank()) {
             testModelCatalog(cleanBaseUrl, apiKey, isAnthropic)
         } else if (isAnthropic) {
