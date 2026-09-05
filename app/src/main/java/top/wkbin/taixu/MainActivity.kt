@@ -66,16 +66,27 @@ import top.wkbin.taixu.ui.theme.TaiXuTheme
 import androidx.core.net.toUri
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 
+import javax.inject.Inject
+import top.wkbin.taixu.core.common.navigation.AppNavigationTarget
+import top.wkbin.taixu.core.common.navigation.GlobalNavigationBus
+import top.wkbin.taixu.service.adb.AdbNotificationManager
+
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
-    @javax.inject.Inject
+    @Inject
     lateinit var settingsDataStore: AppearancePreferences
 
-    @javax.inject.Inject
+    @Inject
     lateinit var appUpdateManager: AppUpdateManager
 
-    @javax.inject.Inject
+    @Inject
     lateinit var runtimeServiceController: RuntimeServiceController
+
+    @Inject
+    lateinit var globalNavigationBus: GlobalNavigationBus
+
+    @Inject
+    lateinit var adbNotificationManager: AdbNotificationManager
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -95,6 +106,7 @@ class MainActivity : AppCompatActivity() {
         val splashScreen = installSplashScreen()
         splashScreen.setKeepOnScreenCondition { keepSplashOnScreen.value }
         super.onCreate(savedInstanceState)
+        handleNavigationIntent(intent)
         enableEdgeToEdge()
         setContent {
             val themeMode by settingsDataStore.themeMode.collectAsStateWithLifecycle(initialValue = "system")
@@ -296,7 +308,7 @@ class MainActivity : AppCompatActivity() {
                     !onboarding.loaded -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                     }
-                    onboarding.completed -> TaiXuNavHost()
+                    onboarding.completed -> TaiXuNavHost(globalNavigationBus = globalNavigationBus)
                     else -> OnboardingScreen(onboardingViewModel)
                 }
                 }
@@ -309,6 +321,22 @@ class MainActivity : AppCompatActivity() {
         // 主应用回到前台时，自动关闭智枢桌面悬浮小窗，避免主界面与悬浮窗重叠
         runCatching {
             top.wkbin.taixu.ui.chat.floating.FloatingChatService.stop(this)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNavigationIntent(intent)
+    }
+
+    private fun handleNavigationIntent(targetIntent: Intent?) {
+        val intentToHandle = targetIntent ?: intent ?: return
+        val action = intentToHandle.action
+        val navigateTo = intentToHandle.getStringExtra("navigate_to")
+        val isAdbLogcat = action == "top.wkbin.taixu.action.OPEN_ADB_LOGCAT" || navigateTo == "adb_logcat"
+        if (isAdbLogcat) {
+            globalNavigationBus.navigateTo(top.wkbin.taixu.core.common.navigation.AppNavigationTarget.AdbLogcat)
         }
     }
 

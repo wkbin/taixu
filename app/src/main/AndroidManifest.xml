@@ -106,6 +106,9 @@
         <receiver
             android:name=".service.AgentReplyReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".service.adb.AdbNotificationReceiver"
+            android:exported="false" />
         <service
             android:name="top.wkbin.taixu.ui.chat.floating.FloatingChatService"
             android:exported="false" />

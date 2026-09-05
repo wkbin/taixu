@@ -3,6 +3,8 @@ package top.wkbin.taixu.ui.developer
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -163,16 +165,34 @@ fun AdbLogcatScreen(
             SectionHeader("安全配对与连接", "密钥持久化保存在应用私有目录；完成一次配对后无需再查端口")
             RuntimeCard(Modifier.fillMaxWidth()) {
                 NoticeBanner(
-                    text = "配对方法：在手机系统「设置 ➔ 开发者选项 ➔ 无线调试」中开启无线调试，并点击「使用配对码配对设备」，太墟会通过 mDNS 自动捕获端口，在此填入 6 位配对码即可。",
+                    text = "💡 通知栏快捷配对推荐：Android 系统在开启「使用配对码配对设备」弹窗时，切出设置会关闭弹窗并使配对码失效。太墟已在系统通知栏提供快捷配对常驻通知，您可在系统开发者选项弹窗中直接下拉通知栏输入 6 位配对码并提交，无需切回！",
                     isError = false,
                 )
+                Spacer(Modifier.height(10.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        runCatching {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            context.startActivity(intent)
+                        }.onFailure {
+                            Toast.makeText(context, "无法直接打开开发者选项，请在系统设置中手动开启", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("前往系统开发者选项（开启无线调试）")
+                }
+
                 Spacer(Modifier.height(12.dp))
 
                 OutlinedTextField(
                     value = pairingCode,
                     onValueChange = { value -> pairingCode = value.filter(Char::isDigit).take(6) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("6 位配对码") },
+                    label = { Text("6 位配对码（亦可直接在通知栏输入）") },
                     placeholder = { Text("例如：123456") },
                     supportingText = { Text("通过 mDNS 自动解析端口，无需手动查找填入") },
                     singleLine = true,
@@ -193,6 +213,17 @@ fun AdbLogcatScreen(
                         modifier = Modifier.weight(1f),
                     ) {
                         Text("重新连接")
+                    }
+                }
+
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    FilledTonalButton(
+                        onClick = viewModel::restartAdbDiscovery,
+                        enabled = !adbBusy,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text("重新探测端口", style = MaterialTheme.typography.labelSmall)
                     }
                 }
 

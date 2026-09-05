@@ -111,6 +111,12 @@ class DeveloperViewModel @Inject constructor(
         }
     }
 
+    fun restartAdbDiscovery() {
+        embeddedAdbManager.stopDiscovery()
+        embeddedAdbManager.startDiscovery()
+        _adbMessage.value = "已重新启动 mDNS 端口探测。"
+    }
+
     fun captureLogcat(packageName: String, tag: String, priority: Char, keyword: String, lines: Int) {
         if (_adbBusy.value) return
         viewModelScope.launch {
