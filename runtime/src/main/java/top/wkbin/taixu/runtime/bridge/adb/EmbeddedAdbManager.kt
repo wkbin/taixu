@@ -298,22 +298,25 @@ class EmbeddedAdbManager @Inject constructor(
 
     // ── 连接 ────────────────────────────────────────────────────────────────
 
-    /** 优先连接当前 mDNS 端点；发现不可用时才回退到上次保存的 localhost 端口。 */
+    /** 优先连接指定/当前 mDNS 端点；排除配对端口，且在局域网 IP 失败时自动尝试 127.0.0.1 回环。 */
     suspend fun connect(explicitPort: Int? = null): Result<Unit> = mutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
                 val discovered = connectEndpointMap.values.toList()
+                val pairingPorts = pairingEndpointMap.values.map { it.port }.toSet()
                 val savedPort = preferences.adbWirelessPort.first()
                 val candidates = buildList {
                     if (explicitPort != null && explicitPort in VALID_PORTS) {
                         add(Endpoint("explicit", LOOPBACK, explicitPort))
                     }
                     addAll(discovered)
-                    if (savedPort in VALID_PORTS && none { it.port == savedPort }) {
+                    if (savedPort in VALID_PORTS && savedPort !in pairingPorts && none { it.port == savedPort }) {
                         add(Endpoint("saved", LOOPBACK, savedPort))
                     }
                 }
-                require(candidates.isNotEmpty()) { "未发现无线调试端口，请确认无线调试已开启" }
+                require(candidates.isNotEmpty()) {
+                    "未发现无线调试连接端口，请确认系统「无线调试」已开启，或手动填入 5 位连接端口"
+                }
                 var lastError: Throwable? = null
                 for (endpoint in candidates) {
                     try {
@@ -334,26 +337,38 @@ class EmbeddedAdbManager @Inject constructor(
     private fun connectTo(endpoint: Endpoint) {
         closeClient()
         _state.value = ConnectionState.Connecting
-        val connected = Kadb.create(
-            host = endpoint.host,
-            port = endpoint.port,
-            connectTimeout = CONNECT_TIMEOUT_MS,
-            socketTimeout = SHELL_TIMEOUT_MS,
-        )
-        try {
-            val probe = connected.shell("echo ok")
-            check(probe.output.trim() == "ok") { "ADB 链路探活失败" }
-            client = connected
-            _state.value = ConnectionState.Connected(endpoint.host, endpoint.port)
-            scope.launch {
-                preferences.setAdbWirelessPort(endpoint.port)
-                persistAdbEndpoint(endpoint.host, endpoint.port)
+        // 尝试用 endpoint.host 连接；若 host 不是 127.0.0.1 且失败，自动尝试 127.0.0.1 回环
+        val hostsToTry = if (endpoint.host != LOOPBACK) listOf(endpoint.host, LOOPBACK) else listOf(LOOPBACK)
+        var lastError: Throwable? = null
+        for (h in hostsToTry) {
+            val connected = try {
+                Kadb.create(
+                    host = h,
+                    port = endpoint.port,
+                    connectTimeout = CONNECT_TIMEOUT_MS,
+                    socketTimeout = SHELL_TIMEOUT_MS,
+                )
+            } catch (e: Throwable) {
+                lastError = e
+                continue
             }
-            Log.i(TAG, "embedded adb connected on ${endpoint.host}:${endpoint.port}")
-        } catch (error: Throwable) {
-            connected.close()
-            throw error
+            try {
+                val probe = connected.shell("echo ok")
+                check(probe.output.trim() == "ok") { "ADB 链路探活失败" }
+                client = connected
+                _state.value = ConnectionState.Connected(h, endpoint.port)
+                scope.launch {
+                    preferences.setAdbWirelessPort(endpoint.port)
+                    persistAdbEndpoint(h, endpoint.port)
+                }
+                Log.i(TAG, "embedded adb connected on $h:${endpoint.port}")
+                return
+            } catch (error: Throwable) {
+                connected.close()
+                lastError = error
+            }
         }
+        throw lastError ?: IllegalStateException("无法连接到端口 ${endpoint.port}")
     }
 
     fun disconnect() {
@@ -483,8 +498,20 @@ class EmbeddedAdbManager @Inject constructor(
         client = null
     }
 
-    private fun Throwable.userMessage(prefix: String): String =
-        "$prefix：${message?.takeIf { it.isNotBlank() } ?: javaClass.simpleName}"
+    private fun Throwable.userMessage(prefix: String): String {
+        val raw = message.orEmpty()
+        val friendlyMessage = when {
+            raw.contains("Failure in SSL library", ignoreCase = true) || raw.contains("ssl", ignoreCase = true) ->
+                "TLS 握手失败（无线调试连接端口已变更，或误连接了配对端口）。请确认系统「无线调试」已开启并核对端口号，或重新完成配对。"
+            raw.contains("Connection refused", ignoreCase = true) ->
+                "连接被拒绝（端口未监听），请确认系统「无线调试」已开启，且端口号输入无误。"
+            raw.contains("ETIMEDOUT", ignoreCase = true) || raw.contains("timed out", ignoreCase = true) ->
+                "连接超时，请确认手机已连接 Wi-Fi 且无线调试处于开启状态。"
+            raw.isNotBlank() -> raw
+            else -> javaClass.simpleName
+        }
+        return "$prefix：$friendlyMessage"
+    }
 
     private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 

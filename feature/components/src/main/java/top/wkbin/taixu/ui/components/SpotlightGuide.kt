@@ -88,13 +88,9 @@ fun SpotlightGuideOverlay(
     // 确认按钮文案参数化：默认从组件模块资源解析（values-en 同步"Got it"），
     // 调用点也可显式传入本地化文案覆盖默认值。
     val resolvedConfirmText = confirmText ?: stringResource(R.string.components_guide_confirm)
-    val anchorBounds = anchor.bounds ?: return
+    val anchorBounds = anchor.bounds
     var overlayOrigin by remember { mutableStateOf(Offset.Zero) }
     var overlaySize by remember { mutableStateOf(IntSize.Zero) }
-    // 首帧竞态：锚点控件可能先于遮罩自身完成测量，此时 overlaySize 还是 0。
-    // 若继续组合，belowAnchor 会误判且 bottom padding 算出负值，直接抛
-    // "Padding must be non-negative"。等自身位置上报后的下一帧再渲染。
-    if (overlaySize == IntSize.Zero) return
 
     Box(
         modifier = Modifier
@@ -105,6 +101,10 @@ fun SpotlightGuideOverlay(
             }
             .pointerInput(Unit) { detectTapGestures { onDismiss() } },
     ) {
+        // 首帧竞态：锚点控件可能尚未完成测量或遮罩自身 overlaySize 还是 0。
+        // 若此时继续绘制，belowAnchor 会误判且 bottom padding 算出负值抛异常。
+        // Box 必须常驻组合树以触发 onGloballyPositioned，内部元素等待自身及锚点坐标上报后再渲染。
+        if (anchorBounds == null || overlaySize == IntSize.Zero) return@Box
         val accent = MaterialTheme.colorScheme.primary
         Canvas(
             modifier = Modifier

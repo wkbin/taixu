@@ -70,8 +70,10 @@ fun AdbLogcatScreen(
     val adbBusy by viewModel.adbBusy.collectAsStateWithLifecycle()
     val adbMessage by viewModel.adbMessage.collectAsStateWithLifecycle()
     val logcatOutput by viewModel.logcatOutput.collectAsStateWithLifecycle()
+    val adbNotificationEnabled by viewModel.adbNotificationEnabled.collectAsStateWithLifecycle()
 
     var pairingCode by rememberSaveable { mutableStateOf("") }
+    var explicitPort by rememberSaveable { mutableStateOf("") }
     var logcatPackage by rememberSaveable { mutableStateOf("top.wkbin.taixu") }
     var logcatTag by rememberSaveable { mutableStateOf("") }
     var logcatKeyword by rememberSaveable { mutableStateOf("") }
@@ -127,7 +129,7 @@ fun AdbLogcatScreen(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            maxLines = 2,
+                            maxLines = 3,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -159,13 +161,36 @@ fun AdbLogcatScreen(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "通知栏配对助手",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                        )
+                        Text(
+                            "在系统通知栏常驻展示配对码输入框，支持免切屏快捷输入",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = adbNotificationEnabled,
+                        onCheckedChange = viewModel::setAdbNotificationEnabled,
+                    )
+                }
             }
 
             // ── 2. 配对与重连控制台 ──────────────────────────────────────────
             SectionHeader("安全配对与连接", "密钥持久化保存在应用私有目录；完成一次配对后无需再查端口")
             RuntimeCard(Modifier.fillMaxWidth()) {
                 NoticeBanner(
-                    text = "💡 通知栏快捷配对推荐：Android 系统在开启「使用配对码配对设备」弹窗时，切出设置会关闭弹窗并使配对码失效。太墟已在系统通知栏提供快捷配对常驻通知，您可在系统开发者选项弹窗中直接下拉通知栏输入 6 位配对码并提交，无需切回！",
+                    text = "💡 通知栏快捷配对推荐：Android 系统在开启「使用配对码配对设备」弹窗时，切出设置会关闭弹窗并使配对码失效。开启上方「通知栏配对助手」后，可在系统开发者选项弹窗中直接下拉通知栏输入 6 位配对码并提交，无需切屏！",
                     isError = false,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -188,31 +213,42 @@ fun AdbLogcatScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                OutlinedTextField(
-                    value = pairingCode,
-                    onValueChange = { value -> pairingCode = value.filter(Char::isDigit).take(6) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("6 位配对码（亦可直接在通知栏输入）") },
-                    placeholder = { Text("例如：123456") },
-                    supportingText = { Text("通过 mDNS 自动解析端口，无需手动查找填入") },
-                    singleLine = true,
-                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = pairingCode,
+                        onValueChange = { value -> pairingCode = value.filter(Char::isDigit).take(6) },
+                        modifier = Modifier.weight(1.1f),
+                        label = { Text("6 位配对码") },
+                        placeholder = { Text("例如：123456") },
+                        supportingText = { Text("首次配对时填入") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = explicitPort,
+                        onValueChange = { value -> explicitPort = value.filter(Char::isDigit).take(5) },
+                        modifier = Modifier.weight(0.9f),
+                        label = { Text("连接端口（可选）") },
+                        placeholder = { Text("如：41235") },
+                        supportingText = { Text("留空由 mDNS 探测") },
+                        singleLine = true,
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
 
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { viewModel.pairWirelessAdb(pairingCode) },
-                        enabled = !adbBusy && pairingCode.length == 6 && adbDiscovery.pairingEndpoints.isNotEmpty(),
+                        onClick = { viewModel.pairWirelessAdb(pairingCode, explicitPort.toIntOrNull()) },
+                        enabled = !adbBusy && pairingCode.length == 6 && (adbDiscovery.pairingEndpoints.isNotEmpty() || explicitPort.isNotBlank()),
                         modifier = Modifier.weight(1f),
                     ) {
                         Text("完成配对并连接")
                     }
                     OutlinedButton(
-                        onClick = viewModel::connectWirelessAdb,
-                        enabled = !adbBusy && adbDiscovery.connectEndpoints.isNotEmpty(),
+                        onClick = { viewModel.connectWirelessAdb(explicitPort.toIntOrNull()) },
+                        enabled = !adbBusy && (adbDiscovery.connectEndpoints.isNotEmpty() || explicitPort.isNotBlank() || adbState is EmbeddedAdbManager.ConnectionState.Connected),
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text("重新连接")
+                        Text(if (explicitPort.isNotBlank()) "连接指定端口" else "重新连接")
                     }
                 }
 

@@ -67,9 +67,7 @@ class AndroidFtpServer(
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
-        val server = ServerSocket()
-        server.reuseAddress = true
-        server.bind(InetSocketAddress(config.port), 50)
+        val server = bindServerSocketWithRetry(config.port)
         serverSocket = server
         onLog("FTP 服务已在端口 ${config.port} 启动")
 
@@ -106,10 +104,46 @@ class AndroidFtpServer(
         }
     }
 
+    private fun bindServerSocketWithRetry(port: Int): ServerSocket {
+        var lastException: Throwable? = null
+        val maxAttempts = 6
+        val delays = listOf(0L, 100L, 200L, 400L, 800L, 1200L)
+
+        for (attempt in 0 until maxAttempts) {
+            if (delays[attempt] > 0) {
+                try {
+                    Thread.sleep(delays[attempt])
+                } catch (_: InterruptedException) {
+                    // Ignore interruption and proceed with attempt
+                }
+            }
+            var s: ServerSocket? = null
+            try {
+                s = ServerSocket()
+                s.reuseAddress = true
+                s.bind(InetSocketAddress(port), 50)
+                return s
+            } catch (e: Exception) {
+                lastException = e
+                runCatching { s?.close() }
+                if (e is SecurityException || e is IllegalArgumentException) {
+                    throw e
+                }
+            }
+        }
+        val msg = lastException?.message ?: "端口 $port 绑定失败"
+        if (msg.contains("EADDRINUSE", ignoreCase = true) || msg.contains("already in use", ignoreCase = true)) {
+            throw java.net.BindException("FTP 端口 $port 正在被占用或尚未完全释放，请稍后再试或更换端口。($msg)")
+        } else {
+            throw (lastException ?: java.net.BindException("FTP 端口 $port 启动失败：$msg"))
+        }
+    }
+
     fun stop() {
         if (!running.compareAndSet(true, false)) return
-        runCatching { serverSocket?.close() }
+        val server = serverSocket
         serverSocket = null
+        runCatching { server?.close() }
         activeSessions.forEach { session ->
             runCatching { session.close() }
         }
@@ -876,7 +910,10 @@ internal class FtpSession(
     fun close() {
         if (!closed.compareAndSet(false, true)) return
         closePassiveServer()
-        runCatching { socket.close() }
+        runCatching {
+            socket.setSoLinger(true, 0)
+            socket.close()
+        }
         onClose(this)
     }
 

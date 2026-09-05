@@ -83,12 +83,21 @@ class DeveloperViewModel @Inject constructor(
     private val _logcatOutput = MutableStateFlow("")
     val logcatOutput: StateFlow<String> = _logcatOutput.asStateFlow()
 
-    fun pairWirelessAdb(code: String) {
+    val adbNotificationEnabled: StateFlow<Boolean> = settingsDataStore.adbNotificationEnabled
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setAdbNotificationEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsDataStore.setAdbNotificationEnabled(enabled)
+        }
+    }
+
+    fun pairWirelessAdb(code: String, pairingPort: Int? = null) {
         if (_adbBusy.value) return
         viewModelScope.launch {
             _adbBusy.value = true
-            _adbMessage.value = "正在使用自动发现的配对端口进行安全配对…"
-            val result = embeddedAdbManager.pair(code.trim())
+            _adbMessage.value = if (pairingPort != null) "正在使用指定配对端口 $pairingPort 进行安全配对…" else "正在使用自动发现的配对端口进行安全配对…"
+            val result = embeddedAdbManager.pair(pairingPort, code.trim())
             _adbMessage.value = result.fold(
                 onSuccess = { "配对并连接成功；密钥已安全保存，后续将自动发现端口并重连。" },
                 onFailure = { it.message ?: "无线 ADB 配对失败" },
@@ -97,12 +106,12 @@ class DeveloperViewModel @Inject constructor(
         }
     }
 
-    fun connectWirelessAdb() {
+    fun connectWirelessAdb(explicitPort: Int? = null) {
         if (_adbBusy.value) return
         viewModelScope.launch {
             _adbBusy.value = true
-            _adbMessage.value = "正在连接自动发现的无线调试端口…"
-            val result = embeddedAdbManager.connect()
+            _adbMessage.value = if (explicitPort != null) "正在连接指定端口 $explicitPort…" else "正在连接自动发现的无线调试端口…"
+            val result = embeddedAdbManager.connect(explicitPort)
             _adbMessage.value = result.fold(
                 onSuccess = { "无线 ADB 已连接。" },
                 onFailure = { it.message ?: "无线 ADB 连接失败" },

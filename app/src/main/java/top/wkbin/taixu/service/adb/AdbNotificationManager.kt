@@ -33,6 +33,7 @@ import top.wkbin.taixu.runtime.bridge.adb.EmbeddedAdbManager
 class AdbNotificationManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val embeddedAdbManager: EmbeddedAdbManager,
+    private val preferences: top.wkbin.taixu.core.datastore.RuntimePreferences,
 ) {
     private val notificationManager: NotificationManager =
         context.getSystemService(NotificationManager::class.java)
@@ -43,7 +44,15 @@ class AdbNotificationManager @Inject constructor(
 
     init {
         createNotificationChannel()
-        startSync()
+        scope.launch {
+            preferences.adbNotificationEnabled.collect { enabled ->
+                if (enabled) {
+                    startSync()
+                } else {
+                    stopSync()
+                }
+            }
+        }
     }
 
     private fun createNotificationChannel() {

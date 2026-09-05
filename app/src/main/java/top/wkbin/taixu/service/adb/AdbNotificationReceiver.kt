@@ -27,6 +27,9 @@ class AdbNotificationReceiver : BroadcastReceiver() {
     @Inject
     lateinit var adbNotificationManager: AdbNotificationManager
 
+    @Inject
+    lateinit var preferences: top.wkbin.taixu.core.datastore.RuntimePreferences
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -95,6 +98,7 @@ class AdbNotificationReceiver : BroadcastReceiver() {
 
             AdbNotificationManager.ACTION_DISMISS -> {
                 adbNotificationManager.dismiss()
+                scope.launch { preferences.setAdbNotificationEnabled(false) }
             }
         }
     }

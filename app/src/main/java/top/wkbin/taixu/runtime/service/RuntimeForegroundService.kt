@@ -68,6 +68,8 @@ class RuntimeForegroundService : Service() {
             cleanupScope.launch {
                 runCatching { localServiceLauncher.stopAll() }
                 runCatching { processRegistry.stopAll() }
+                runCatching { ftpServiceManager.stop() }
+                runCatching { sshServiceManager.stop() }
                 releaseLocks()
             }
             return START_NOT_STICKY
@@ -92,6 +94,10 @@ class RuntimeForegroundService : Service() {
 
     override fun onDestroy() {
         releaseLocks()
+        cleanupScope.launch {
+            runCatching { ftpServiceManager.stop() }
+            runCatching { sshServiceManager.stop() }
+        }
         super.onDestroy()
     }
 

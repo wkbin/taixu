@@ -388,6 +388,44 @@ class AndroidFtpServerTest {
         }
     }
 
+    @Test
+    fun `can restart immediately on the same port after stop`() {
+        val root = tempFolder.newFolder("rootfs")
+        val port = freePort()
+
+        val server1 = AndroidFtpServer(FtpServerConfig(port = port, rootDirectory = root, anonymousEnabled = true))
+        server1.start()
+        assertTrue(server1.isRunning)
+
+        // Connect a client and quit
+        Socket("127.0.0.1", port).use { socket ->
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+            val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+            reader.readLine()
+            writer.write("QUIT\r\n")
+            writer.flush()
+            reader.readLine()
+        }
+
+        server1.stop()
+        assertFalse(server1.isRunning)
+
+        // Immediately start another instance on the exact same port
+        val server2 = AndroidFtpServer(FtpServerConfig(port = port, rootDirectory = root, anonymousEnabled = true))
+        server2.start()
+        assertTrue(server2.isRunning)
+
+        try {
+            Socket("127.0.0.1", port).use { socket ->
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+                val banner = reader.readLine()
+                assertTrue(banner.startsWith("220 "))
+            }
+        } finally {
+            server2.stop()
+        }
+    }
+
     private fun parsePasvAddress(pasvResponse: String): Pair<String, Int> {
         val start = pasvResponse.indexOf('(')
         val end = pasvResponse.indexOf(')')

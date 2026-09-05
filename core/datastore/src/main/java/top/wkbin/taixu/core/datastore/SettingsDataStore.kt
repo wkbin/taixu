@@ -617,6 +617,7 @@ class SettingsDataStore @Inject constructor(
 
     private val adbWirelessPortKey = androidx.datastore.preferences.core.intPreferencesKey("adb_wireless_debug_port")
     private val adbPairedOnceKey = booleanPreferencesKey("adb_wireless_paired_once")
+    private val adbNotificationEnabledKey = booleanPreferencesKey("adb_notification_enabled")
 
     /** 无线调试主端口（开发者选项里"无线调试"显示的 IP:PORT），0 表示未配置。 */
     val adbWirelessPort: Flow<Int> = context.settingsDataStore.data.map { it[adbWirelessPortKey] ?: 0 }
@@ -628,6 +629,12 @@ class SettingsDataStore @Inject constructor(
     val adbPairedOnce: Flow<Boolean> = context.settingsDataStore.data.map { it[adbPairedOnceKey] ?: false }
     suspend fun setAdbPairedOnce(value: Boolean) {
         context.settingsDataStore.edit { it[adbPairedOnceKey] = value }
+    }
+
+    /** 无线 ADB 通知栏助手开关（默认 false，开启后在通知栏常驻展示配对助手）。 */
+    val adbNotificationEnabled: Flow<Boolean> = context.settingsDataStore.data.map { it[adbNotificationEnabledKey] ?: false }
+    suspend fun setAdbNotificationEnabled(enabled: Boolean) {
+        context.settingsDataStore.edit { it[adbNotificationEnabledKey] = enabled }
     }
 
     // ==================== Linux SSH 远程访问 ====================

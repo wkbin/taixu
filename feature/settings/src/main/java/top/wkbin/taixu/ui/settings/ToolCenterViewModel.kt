@@ -62,7 +62,7 @@ class ToolCenterViewModel @Inject constructor(
     /** 首次进入插件中心的离线包导入引导：false 表示尚未看过，需要展示遮罩引导。 */
     val importGuideShown: StateFlow<Boolean> = settingsDataStore.firstUseGuidesShown
         .map { it.contains(GUIDE_IMPORT_OFFLINE) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun markImportGuideShown() {
         viewModelScope.launch {
