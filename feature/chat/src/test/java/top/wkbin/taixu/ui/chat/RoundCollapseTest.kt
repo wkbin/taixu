@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.CapabilityEvent
+import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.HarnessTool
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
@@ -341,5 +342,62 @@ class RoundCollapseTest {
         val folded = projectChatMessages(messages, emptyMap(), emptyMap(), collapseEnabled = true)
         assertEquals("折叠态下 rawIndex 语义必须与单行流一致", 3, rawIndexById(folded, "t2"))
         assertEquals(7, rawIndexById(folded, "a1"))
+    }
+
+    // ==================== 分帧揭示（revealLimits） ====================
+
+    /** 3 步轮次里，被折叠时会消失的渲染条目 = 最旧 1 个工具卡 + 跟随它的中间正文 = 2 条。 */
+    private fun revealFixtures(): List<HarnessMessage> = listOf(
+        makeUser("u1"),
+        makeToolCall("t1"),
+        makeToolResult("t1"),
+        makeAssistant("a_mid", "Let me keep digging"),
+        makeToolCall("t2"),
+        makeToolResult("t2"),
+        makeToolCall("t3"),
+        makeToolResult("t3"),
+        makeAssistant("a_final", "Done"),
+        makeUser("u2"),
+        makeAssistant("a2", "Hello"),
+    )
+
+    @Test
+    fun `revealLimits caps how many hidden items are released per frame`() {
+        val items = projectChatMessages(
+            revealFixtures(),
+            emptyMap(),
+            mapOf("u1" to true),
+            collapseEnabled = true,
+            revealLimits = mapOf("u1" to 1),
+        )
+        val button = buttons(items).single()
+        assertTrue(button.isExpanded)
+        assertEquals("隐藏段总条目数应上报给 UI 用于分帧步长", 2, button.hiddenItemCount)
+        // 只放出第 1 条隐藏项（t1），紧随其后的中间正文 a_mid 仍被压住
+        assertEquals(listOf("u1", "t1", "t2", "t3", "a_final", "u2", "a2"), messageIds(items))
+    }
+
+    @Test
+    fun `revealLimits default releases every hidden item at once`() {
+        val items = projectChatMessages(
+            revealFixtures(),
+            emptyMap(),
+            mapOf("u1" to true),
+            collapseEnabled = true,
+        )
+        val button = buttons(items).single()
+        assertEquals(2, button.hiddenItemCount)
+        assertEquals(
+            listOf("u1", "t1", "a_mid", "t2", "t3", "a_final", "u2", "a2"),
+            messageIds(items),
+        )
+    }
+
+    @Test
+    fun `collapsed round reports zero hidden item count`() {
+        val items = projectChatMessages(revealFixtures(), emptyMap(), emptyMap(), collapseEnabled = true)
+        val button = buttons(items).single()
+        assertFalse(button.isExpanded)
+        assertEquals("收拢态不参与分帧揭示，条目数恒为 0", 0, button.hiddenItemCount)
     }
 }

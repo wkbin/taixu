@@ -130,11 +130,8 @@ internal fun ChatMessageList(
     // 折叠状态用自定义 Saver：Map 不能直接存入 Bundle（会抛 IllegalArgumentException）
     var expandedOverrides by rememberSaveable(stateSaver = ExpandedOverridesSaver) { mutableStateOf(mapOf<String, Boolean>()) }
 
-    // 折叠关闭（默认）时投影不读取 toolResults，故也不把它列为 remember 键。
-    val projectionToolResults = if (chatRoundCollapse) toolResults else emptyMap()
-    val renderItems = remember(messages, expandedOverrides, chatRoundCollapse, projectionToolResults) {
-        projectChatMessages(messages, projectionToolResults, expandedOverrides, chatRoundCollapse)
-    }
+    val reveal = rememberRoundRevealState()
+    val renderItems = rememberChatRenderItems(messages, toolResults, expandedOverrides, chatRoundCollapse, reveal.limits)
     val waitingForFirstOutput = remember(
         // 只依赖「末条消息的 id + 其内容签名」：流式期间末条内容变化会改变签名（真正需要重算），
         // 而历史消息变化不影响该判定，因此无需依赖整个 messages 列表引用（避免每帧 O(n) 重算）。
@@ -211,8 +208,9 @@ internal fun ChatMessageList(
                         RoundCollapseButton(
                             item = item,
                             onToggle = {
-                                val currentExpanded = item.isExpanded
-                                expandedOverrides = expandedOverrides + (item.roundKey to !currentExpanded)
+                                val wasExpanded = item.isExpanded
+                                expandedOverrides = expandedOverrides + (item.roundKey to !wasExpanded)
+                                reveal.onToggled(item, wasExpanded, chatRoundCollapse)
                             },
                         )
                     }
