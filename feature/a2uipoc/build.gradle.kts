@@ -20,4 +20,7 @@ dependencies {
     implementation(libs.a2ui.compose.runtime)
     implementation(libs.a2ui.compose.ui)
     implementation(libs.a2ui.material3)
+
+    // 值型组件「常量 value 归一化」的单测（纯 JVM，无 Android 依赖）
+    testImplementation(libs.bundles.test.robolectric)
 }

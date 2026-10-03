@@ -100,8 +100,13 @@ object TaiXuA2uiRenderer {
         synchronized(processedPayloads) {
             if (processedPayloads.containsKey(fingerprint)) return null
         }
+        // 值型组件（TextField/CheckBox/ChoicePicker/Slider/DateTimeInput）写常量 value 时，
+        // 官方 bindUpdater 判定非 "\{"path"\}" 即返回 null → isEnabled=false → 组件被**静默禁用**
+        // （能渲染、不能输入、不回传、无提示）。这里统一归一化为数据绑定并种值，
+        // 使这五类组件真正可用；已是数据绑定的载荷幂等不变。见 TaiXuA2uiInputNormalizer。
+        val normalized = TaiXuA2uiInputNormalizer.normalize(messagesJson)
         val error = runCatching {
-            Json.parseToJsonElement(messagesJson).jsonArray.forEach { element ->
+            Json.parseToJsonElement(normalized.messagesJson).jsonArray.forEach { element ->
                 processor.processMessage(parser.parse(element.toString()))
             }
         }.fold(
