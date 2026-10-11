@@ -295,16 +295,18 @@ class HarnessRuntimeRepositoryIntegrationTest {
         )
 
         val next = repository.listQueue(sessionId, "main", "next_run")
-        assertEquals(listOf("s-early", "s-mid", "s-late"), next.map { it.id })
-        assertEquals(listOf("early", "mid", "late"), next.map { it.payloadJson })
+        assertEquals(listOf("s-early", "s-late"), next.map { it.id })
+        assertEquals(listOf("early", "late"), next.map { it.payloadJson })
         assertTrue(next.all { it.operationId == null })
-        assertTrue(repository.listQueue(sessionId, "main", "steer").isEmpty())
+        val leftover = repository.listQueue(sessionId, "main", "steer")
+        assertEquals("s-mid", leftover.single().id)
+        assertNull(leftover.single().operationId)
         assertTrue(repository.listQueue(sessionId, "main", "follow_up").isEmpty())
         assertNull(repository.findOperation("op-steer"))
     }
 
     @Test
-    fun `finishOperation detaches steer when a next run is already waiting`() = runBlocking {
+    fun `finishOperation drops operation steer when a next run is already waiting`() = runBlocking {
         val sessionId = "s-steer-keep"
         dao.acceptOperation(
             entry("e1", sessionId, null),
@@ -323,10 +325,7 @@ class HarnessRuntimeRepositoryIntegrationTest {
         val next = repository.listQueue(sessionId, "main", "next_run")
         assertEquals(listOf("n1"), next.map { it.id })
         assertNull(next.single().operationId)
-        val steer = repository.listQueue(sessionId, "main", "steer")
-        assertEquals("s1", steer.single().id)
-        assertNull(steer.single().operationId)
-        assertEquals("steer", steer.single().payloadJson)
+        assertTrue(repository.listQueue(sessionId, "main", "steer").isEmpty())
         assertTrue(repository.listQueue(sessionId, "main", "follow_up").isEmpty())
     }
 

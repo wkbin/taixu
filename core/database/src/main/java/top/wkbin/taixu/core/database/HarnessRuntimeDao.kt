@@ -251,8 +251,11 @@ interface HarnessRuntimeDao {
     @Query("DELETE FROM harness_queue_items WHERE operationId = :operationId")
     suspend fun deleteOperationQueue(operationId: String)
 
-    @Query("UPDATE harness_queue_items SET operationId = NULL WHERE operationId = :operationId AND queueType IN ('next_run', 'steer')")
+    @Query("UPDATE harness_queue_items SET operationId = NULL WHERE operationId = :operationId AND queueType = 'next_run'")
     suspend fun detachNextRunQueue(operationId: String)
+
+    @Query("UPDATE harness_queue_items SET queueType = 'next_run', operationId = NULL WHERE sessionId = :sessionId AND laneName = :laneName AND operationId = :operationId AND queueType = 'steer'")
+    suspend fun promoteOperationSteering(sessionId: String, laneName: String, operationId: String)
 
     @Query("DELETE FROM harness_entries WHERE sessionId = :sessionId")
     suspend fun deleteSessionEntries(sessionId: String)
@@ -360,15 +363,13 @@ interface HarnessRuntimeDao {
 
     @Transaction
     suspend fun finishOperation(result: HarnessLaneResultEntity, lane: HarnessLaneEntity) {
-        // 先解绑 next_run 与 steer。没有 next_run 时把 steer 按原顺序提升为下一轮；follow_up 仍删除。
         detachNextRunQueue(result.operationId)
         if (listQueue(lane.sessionId, lane.name, "next_run").isEmpty()) {
-            retargetQueue(lane.sessionId, lane.name, "steer", "next_run")
+            promoteOperationSteering(lane.sessionId, lane.name, result.operationId)
         }
         deleteOperationQueue(result.operationId)
         deleteOperation(result.operationId)
         upsertLaneResult(result)
-        // 后来的运行可能已占用这条 lane，只清当前 operation 的指针。
         clearLaneOperationIfCurrent(lane.sessionId, lane.name, result.operationId, lane.updatedAt, lane.faulted)
     }
 
