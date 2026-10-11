@@ -2,6 +2,9 @@ package top.wkbin.taixu.harness
 
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -13,12 +16,13 @@ import kotlinx.coroutines.sync.withPermit
  * 单回合多工具调用的受限并发调度器。
  *
  * 约束：
- * - [isParallelSafe] 为真的工具（只读工具，以及自行协调写隔离的编排型工具）在 [parallelism]
- *   个许可内并发执行，不参与全局变更互斥；
+ * - 连续的 [isParallelSafe] 工具在 [parallelism] 个许可内并发执行；其他工具形成顺序屏障，
+ *   等前一组全部完成后执行，完成后才启动下一组；
  * - 变更类工具（写文件/命令/下载/MCP 等）按 mutationScope（工作区）互斥，避免同一工作区
  *   内的副作用互相踩踏。互斥只按工作区分片：BASE 超时上限 1 小时、DOWNLOAD 可达 4GB×10
  *   次重试，若做成跨会话全局单例，一个工作区的长构建会挡住所有其他工作区的普通写入；
  *   审批恢复（resolveApproval）执行被批准的变更工具也经 [withMutationLock] 走同一把锁；
+ *   自行协调写隔离的子智能体仍形成回合屏障，但可通过 [needsMutationLock] 避免整批持锁；
  * - 任一工具触发审批暂停（[Pause.abort]）后，尚未开始的工具不再启动，在途工具自然跑完，
  *   与原串行"中途暂停、后续调用不执行"的语义保持一致；
  * - 取消沿结构化并发传播：外层 Job 被取消时，所有在途工具被打断并向上抛出
@@ -50,6 +54,10 @@ class ToolRoundDispatcher() {
 
     internal val retainedMutationScopeCount: Int get() = mutationMutexes.size
 
+    /** Shared by lane effects and approval replay; orchestration never holds a parent lock. */
+    internal suspend fun <T> withToolLock(tool: HarnessTool, scopeKey: String, block: suspend () -> T): T =
+        if (ToolSchedulingPolicy.needsMutationLock(tool)) withMutationLock(scopeKey, block) else block()
+
     class Pause private constructor() {
         private val aborted = AtomicBoolean(false)
         fun abort() { aborted.set(true) }
@@ -65,30 +73,41 @@ class ToolRoundDispatcher() {
         parallelism: Int = DEFAULT_PARALLELISM,
         mutationScope: String = "",
         isParallelSafe: (T) -> Boolean,
+        needsMutationLock: (T) -> Boolean = { !isParallelSafe(it) },
         run: suspend (T, Pause) -> Unit,
     ) {
         if (items.isEmpty()) return
-        if (items.size == 1 || parallelism <= 1) {
-            val pause = Pause.create()
-            items.forEach { item ->
-                if (pause.isAborted()) return
-                if (isParallelSafe(item)) run(item, pause)
-                else withMutationLock(mutationScope) {
+        val pause = Pause.create()
+        val permits = Semaphore(parallelism.coerceAtLeast(1))
+        suspend fun execute(item: T) {
+            if (pause.isAborted()) return
+            if (needsMutationLock(item)) {
+                withMutationLock(mutationScope) {
                     if (!pause.isAborted()) run(item, pause)
                 }
-            }
-            return
+            } else run(item, pause)
         }
-        val pause = Pause.create()
-        val permits = Semaphore(parallelism)
-        coroutineScope {
-            items.forEach { item ->
-                launch {
-                    permits.withPermit {
-                        if (pause.isAborted()) return@withPermit
-                        if (isParallelSafe(item)) run(item, pause)
-                        else withMutationLock(mutationScope) {
-                            if (!pause.isAborted()) run(item, pause)
+        var cursor = 0
+        while (cursor < items.size && !pause.isAborted()) {
+            if (!isParallelSafe(items[cursor]) || parallelism <= 1) {
+                execute(items[cursor++])
+                continue
+            }
+            val start = cursor++
+            while (cursor < items.size && isParallelSafe(items[cursor])) cursor++
+            val end = cursor
+            // Await the entire group, including durable result publication, before the barrier.
+            coroutineScope {
+                val group = this
+                for (index in start until end) {
+                    // FIFO permits keep ordered intent publication free of gaps.
+                    launch(start = CoroutineStart.UNDISPATCHED) {
+                        try {
+                            permits.withPermit { execute(items[index]) }
+                        } catch (cancelled: CancellationException) {
+                            // Child cancellation alone does not cancel siblings waiting on publication.
+                            group.cancel("Tool group cancelled", cancelled)
+                            throw cancelled
                         }
                     }
                 }

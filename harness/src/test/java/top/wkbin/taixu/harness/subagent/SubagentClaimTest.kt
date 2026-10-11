@@ -2,6 +2,8 @@ package top.wkbin.taixu.harness.subagent
 
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -100,6 +102,40 @@ class SubagentClaimTest {
         assertEquals(1, receipts.commands.size)
         assertTrue(receipts.commands.single().contains("gradlew test"))
         assertEquals(listOf("docs/report.md"), receipts.writtenPaths)
+    }
+
+    @Test
+    fun `structured MCP arguments do not interrupt completion adjudication`() {
+        val mcpCall = ToolCall("mcp", 9L, HarnessTool.MCP, buildJsonObject {
+            put("command", buildJsonObject { put("operation", JsonPrimitive("query")) })
+            put("path", JsonArray(listOf(JsonPrimitive("remote/path"))))
+            put("destination", buildJsonObject { put("id", JsonPrimitive("remote")) })
+        }, rawToolName = "mcp__demo__query")
+        val messages = transcript() + listOf(
+            mcpCall, ToolResult("mcp-result", 10L, mcpCall.id, success = true, output = "ok"),
+        )
+        val receipts = extractSubagentReceipts(messages)
+        assertEquals(extractSubagentReceipts(transcript()), receipts)
+        val claim = parseSubagentClaim(claimJson)!!.let { parsed ->
+            parsed.copy(criteria = parsed.criteria.filter { it.type != "manual" })
+        }
+        assertEquals("complete", adjudicateSubagentClaim(claim, receipts).adjudicatedStatus)
+    }
+
+    @Test
+    fun `malformed or null receipt fields are ignored without losing valid receipts`() {
+        val invalidValues = listOf(JsonNull, buildJsonObject {}, JsonArray(emptyList()), JsonPrimitive(" "))
+        for (value in invalidValues) {
+            val messages = transcript() + listOf(
+                ToolCall("base-invalid", 9L, HarnessTool.BASE, buildJsonObject { put("command", value) }),
+                ToolResult("base-result", 10L, "base-invalid", success = true, output = "ok"),
+                ToolCall("write-invalid", 11L, HarnessTool.WRITE, buildJsonObject { put("path", value) }),
+                ToolResult("write-result", 12L, "write-invalid", success = true, output = "ok"),
+                ToolCall("download-invalid", 13L, HarnessTool.DOWNLOAD, buildJsonObject { put("destination", value) }),
+                ToolResult("download-result", 14L, "download-invalid", success = true, output = "ok"),
+            )
+            assertEquals(extractSubagentReceipts(transcript()), extractSubagentReceipts(messages))
+        }
     }
 
     // ---------- 裁定 ----------

@@ -300,12 +300,15 @@ val runtimeModule = module {
     single<ProcessShellExecutor> { ProcessShellExecutor(pathManager = get()) }
 
     single<TerminalSessionClientRouter> { TerminalSessionClientRouter() }
+    single<top.wkbin.taixu.runtime.terminal.TerminalProcessFactory> { top.wkbin.taixu.runtime.terminal.TermuxTerminalProcessFactory() }
 
     single<TerminalSessionManager> {
         TerminalSessionManager(
             linuxRuntime = get(),
             terminalSessionDao = get(),
             sessionClientRouter = get(),
+            environmentFactory = get(),
+            processFactory = get(),
         )
     }
 

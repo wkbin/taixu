@@ -1,5 +1,7 @@
 # ⚡ 太墟 (TaiXu) — 核心调用链路与执行时序 (Execution Traces)
 
+文件/命令/MCP/PTY 的后端归属及会话关闭顺序见 [执行环境与资源作用域](EXECUTION_ENVIRONMENTS.md)。
+
 ---
 
 ## 1. Agent 发起与工具执行循环 (Harness Loop)
@@ -15,6 +17,7 @@ ChatScreen (UI)
               │                     ➔ ChatApi / ResponsesApi / AnthropicApi ➔ reasoning & text / tool_calls
               └─► 当模型返回 tool_calls:
                     ├─► HarnessApiMapper 映射 read / write / edit / base / process
+                    ├─► ToolRoundDispatcher：连续只读调用限流并行；变更/编排工具形成前后顺序屏障
                     ├─► DurableToolRunner 等待执行意图持久化
                     ├─► ToolExecutor / ToolExecutionBoundary 等待前置检查点（可否决）
                     │     ├─► 既有 PLAN / ApprovalPolicyEngine / 宿主权限门控
@@ -34,6 +37,30 @@ ChatScreen (UI)
 压缩流程：锁外生成摘要 → Lane 锁内重读并核对消息前缀 → 记录快照来源水位线 → 提交不可变压缩条目 → 重新投影已提交分支。重读后、提交前由其他事务追加的消息和分支摘要，会立即通过水位线补回；压缩返回值与下一次投影一致。损坏快照或旧格式保留消息解码失败时回退完整活动分支，并在检查结果中注明原因；存储读取异常仍向调用方传播。
 
 Web 会话发送：认证 REST → `WebChatRunProtocol` 解析输入模式 → `WebChatRunTracker` 预留客户端关联 ID → gateway / `SessionControl.submit()` → 持久化接收回执。任务、完整用户消息及 operation 在启动事务中一起提交；受理后的队列投影刷新失败不改写成功回执。有独立任务 ID 时，经 `AgentTaskRepository.observeTask()` 观察精确任务状态；终态通过 `loadStrict()` 重读已提交消息，再报告 SSE 完成/失败，读取异常报告 error 并保留现有消息。每次请求分别观察，排队后继不会因前驱结束而完成。客户端 `TaskReceiptTracker` 记住回执之前的审批/终态事件，回执不再重新激活任务；记忆仅保留到请求结束。显式远端 ID 不切换前台，受理前存储失败返回通用 HTTP 500，取消传播。
+
+---
+
+### 同轮工具并发与发布顺序
+
+主回合和子智能体共用 `ToolCallContract`，先拒绝未知工具名，再解析 JSON 对象及校验参数；未知名不会因 `HarnessApiMapper` 的历史映射回退而执行 `base`。内置名称大小写与兼容别名使用同一 schema；旧式 `mcp__` 调用由实时网关核验可用性。Lane 写租约检查使用与 `ToolExecutor` 相同的参数归一化视图，因此 `file_path` 别名及参数包装中的真实目标同样受约束；持久化与执行仍保留原始参数，避免二次解包或改写 MCP 的合法键。
+
+调度按模型调用顺序划分连续分组：`read A / read B → write A → read A` 的前两项最多 4 个并行，写入等待读取及结果提交全部完成，最后一次读取等待写入结果提交。只读白名单为 `read / history_search / history_read / load_rule`；计划、记忆、草稿以及 MCP、宿主和未知能力均形成屏障。子智能体也形成屏障，但依靠自身写租约协调，不在父回合整批持有工作区锁。
+
+`OrderedToolPublication` 分别按合法调用的模型顺序提交意图与结果；工具执行体和其前后检查点可以并发，检查点扩展必须支持并发调用。参数错误及未知工具仍在校验阶段即时发布，不属于这条排序链。提交异常取消整组和后续屏障；工具自身抛出取消异常也取消同组等待发布的调用，避免排序等待悬挂。审批暂停只允许已启动的只读调用收尾，其余调用不会启动。
+
+这些顺序屏障只覆盖同一轮。跨回合的变更及审批恢复仍共享按工作区分片的互斥锁，读取不会获得工作区读锁，因此并发会话之间不提供读写快照隔离。结果排序等待计入并发许可，限制待提交结果数量；一个慢读取可能暂时占住整个读取组的许可。
+
+子智能体 Lane 保持逐项执行；变更调用从意图提交到结果提交使用与主回合相同的工作区锁。审批恢复由 `ApprovalToolRunner` 重用冻结的 ToolCall ID，先提交不重复写消息的执行意图，再执行及提交结果；进程重启因此能识别“已开始重执行、结果未落盘”，不会被原来的审批等待结果掩盖。普通写入锁覆盖结果提交，子智能体编排不整批持锁，子工具逐项取锁。取消或提交异常时重读持久化结果：已提交终态保持原样，只有仍无终态的调用补上结果未知说明，不自动重执行。
+
+Lane 的取消与异常收尾通过 `SubagentLaneFinalizer` 在不可取消区先补齐当前悬空工具结果，再清除运行指针。历史读取或补齐提交失败时保留指针，启动恢复仍可发现该运行；执行意图未落盘时不制造工具结果。声明可安全重放的只读调用记录中断，其他调用记录结果未知；主回合与 Lane 中执行体抛出的非只读异常同样不能证明副作用失败。异常返回与超时汇总将核验指引交给父智能体，即使后续无关失败覆盖“最近失败”也不会丢失未知结果的说明。
+
+同一进程中的新输入接管也经过 `OperationCoordinator.settleInterruptedTool()`：`acceptRun`、`acceptQueuedRun` 和 `beginRun` 替换挂起运行前，先严格读取当前分支及 pending call 的已提交结果，再补齐未决调用。子 Lane 收尾共用该规则；已有终态保持原样，审批恢复的旧等待结果不算终态。读取、解码或补齐提交失败时，不结束旧 operation，也不提交新输入；排队输入保留供重试。本次接管不执行旧工具，未知副作用的核验指引先进入历史，再追加新的用户消息。
+
+旧运行正常结束事务会先解除 `next_run` 输入与旧 operation 的关联，再清理该运行的 steer / follow_up 指令；后继输入保留原顺序、任务 ID 与图片。结束提交后、新受理前中断时，队列及 QUEUED 任务仍可重读并重试。直接输入与排队输入共用 `acceptRunTakeover`，把旧运行结束、可选队列消费、可选任务 RUNNING、完整输入及新 operation 合并为单个事务，并核对旧运行指针及历史叶子；队列缺失、类型或归属不符、任务缺失/归属错误/已取消、输入写入失败或并发运行/历史变更都会回滚接管，保留现有运行及悬空指针。子 Lane 使用相同受理路径，接管不会改动主 Lane。悬空工具结果的补齐先单独提交，因此受理失败也不会丢掉未知结果说明；重试保持幂等。运行结束/启动事件在接管提交成功后发布。
+
+不追加输入的 `beginRun` 也使用同一接管事务，已有运行中或审批等待 operation 直接复用；挂起 operation 才会被替换。新运行创建或旧结束记录提交失败时，旧运行、队列及历史叶子一起保留；工具结果补齐不改变挂起状态，下一次 `beginRun` 仍可重试替换。无输入启动不追加消息，新的 `startLeafId` 与已有历史叶子一致；并发指针或叶子变化拒绝提交。
+
+设计参考：[DeepSeek Harness 工具并发设计](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-07-10-parallel-tool-call-execution.md)。
 
 ---
 

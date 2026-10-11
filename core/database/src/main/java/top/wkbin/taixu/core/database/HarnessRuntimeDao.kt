@@ -236,6 +236,9 @@ interface HarnessRuntimeDao {
     @Query("DELETE FROM harness_queue_items WHERE id = :itemId")
     suspend fun deleteQueueItem(itemId: String)
 
+    @Query("DELETE FROM harness_queue_items WHERE id = :itemId AND sessionId = :sessionId AND laneName = :laneName AND queueType = 'next_run'")
+    suspend fun claimNextRunQueue(itemId: String, sessionId: String, laneName: String): Int
+
     @Query("DELETE FROM harness_queue_items WHERE sessionId = :sessionId AND laneName = :laneName AND queueType = :queueType")
     suspend fun clearQueue(sessionId: String, laneName: String, queueType: String)
 
@@ -247,6 +250,9 @@ interface HarnessRuntimeDao {
 
     @Query("DELETE FROM harness_queue_items WHERE operationId = :operationId")
     suspend fun deleteOperationQueue(operationId: String)
+
+    @Query("UPDATE harness_queue_items SET operationId = NULL WHERE operationId = :operationId AND queueType = 'next_run'")
+    suspend fun detachNextRunQueue(operationId: String)
 
     @Query("DELETE FROM harness_entries WHERE sessionId = :sessionId")
     suspend fun deleteSessionEntries(sessionId: String)
@@ -280,8 +286,11 @@ interface HarnessRuntimeDao {
         lane: HarnessLaneEntity,
         operation: HarnessOperationEntity,
     ) {
+        require(entry.sessionId == lane.sessionId && operation.sessionId == lane.sessionId && operation.laneName == lane.name)
+        check(claimNextRunQueue(queueItemId, lane.sessionId, lane.name) == 1) {
+            "Next-run queue item could not claim admission"
+        }
         insertEntryOrThrow(entry)
-        deleteQueueItem(queueItemId)
         upsertOperation(operation)
         upsertLane(lane)
     }
@@ -321,7 +330,39 @@ interface HarnessRuntimeDao {
     }
 
     @Transaction
+    suspend fun acceptRunTakeover(queueItemId: String?, entry: HarnessEntryEntity?, lane: HarnessLaneEntity,
+        operation: HarnessOperationEntity, previousLane: HarnessLaneEntity,
+        previousResult: HarnessLaneResultEntity?, taskId: String?) {
+        require(previousLane.sessionId == lane.sessionId && previousLane.name == lane.name)
+        require((entry == null || entry.sessionId == lane.sessionId) && operation.sessionId == lane.sessionId && operation.laneName == lane.name)
+        val current = findLane(lane.sessionId, lane.name)
+        check(current != null && current.currentOperationId == previousLane.currentOperationId && current.leafId == previousLane.leafId) {
+            "Lane changed before input admission"
+        }
+        require(lane.currentOperationId == operation.id && operation.startLeafId == previousLane.leafId)
+        if (entry == null) require(queueItemId == null && taskId == null && lane.leafId == previousLane.leafId)
+        else require(entry.parentId == previousLane.leafId && lane.leafId == entry.id)
+        if (previousResult != null) {
+            require(previousResult.sessionId == lane.sessionId && previousResult.laneName == lane.name &&
+                previousResult.operationId == previousLane.currentOperationId)
+            finishOperation(previousResult, previousLane.copy(currentOperationId = null,
+                updatedAt = previousResult.completedAt, faulted = false))
+        } else {
+            check(previousLane.currentOperationId?.let { findOperation(it) } == null) {
+                "Existing operation requires a takeover result"
+            }
+        }
+        if (entry == null) beginOperation(lane, operation)
+        else if (taskId != null) acceptTaskOperation(taskId, entry, lane, operation, queueItemId)
+        else if (queueItemId != null) acceptQueuedOperation(queueItemId, entry, lane, operation)
+        else acceptOperation(entry, lane, operation)
+    }
+
+    @Transaction
     suspend fun finishOperation(result: HarnessLaneResultEntity, lane: HarnessLaneEntity) {
+        // Next-run inputs belong to future runs. Preserve them through both normal
+        // completion and takeover, including a crash before the next admission.
+        detachNextRunQueue(result.operationId)
         deleteOperationQueue(result.operationId)
         deleteOperation(result.operationId)
         upsertLaneResult(result)

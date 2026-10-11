@@ -404,7 +404,6 @@ internal fun renderSubagentProgressDigest(transcript: List<HarnessMessage>): Str
     }.trim()
 }
 
-/** 超时汇总：既说清超时事实，也交出阶段成果供续跑。 */
 internal fun buildSubagentTimeoutSummary(
     timeoutMs: Long,
     toolCallCount: Int,
@@ -412,6 +411,7 @@ internal fun buildSubagentTimeoutSummary(
     laneName: String,
 ): String = buildString {
     append("⚠️ 子任务执行超时（${timeoutMs / 60_000} 分钟，已执行 $toolCallCount 次工具调用），未产出最终结论。")
+    append(subagentOutcomeUncertainty(transcript))
     val digest = renderSubagentProgressDigest(transcript)
     if (digest.isNotBlank()) {
         append("\n\n")

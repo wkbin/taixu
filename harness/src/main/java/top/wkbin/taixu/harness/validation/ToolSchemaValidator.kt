@@ -179,8 +179,9 @@ object ToolSchemaValidator {
         args: JsonObject,
         mcpTools: List<McpToolInfo> = emptyList(),
     ): List<String> {
-        val schema = resolveSchema(toolName, mcpTools) ?: return emptyList()
-        val isMcp = toolName.startsWith("mcp__")
+        val name = toolName.trim()
+        val schema = resolveSchema(name, mcpTools) ?: return emptyList()
+        val isMcp = name.startsWith("mcp__") || name.equals("use_capability", ignoreCase = true)
         // MCP 工具：既不套用内置别名，也不做单键解包/扁平键还原（见 normalizeArgs 注释）
         val normalized = normalizeArgs(args, applyAliases = !isMcp, isMcpTool = isMcp)
         return validateObject(schema, normalized, prefix = "")
@@ -196,10 +197,11 @@ object ToolSchemaValidator {
             if (tool.parametersJson.isBlank()) return null
             return runCatching { json.parseToJsonElement(tool.parametersJson) as? JsonObject }.getOrNull()
         }
-        val apiName = when (toolName) {
+        val apiName = when (val name = toolName.lowercase()) {
             "history.search" -> "history_search"
             "history.read" -> "history_read"
-            else -> toolName
+            "subagent" -> "invoke_subagent"
+            else -> name
         }
         // host 的校验面 = 执行器接受面（direct ∪ deferred 并集）：provider 声明面只宣告
         // direct 高频动作（prompt 减负），deferred 动作经 use_capability 或旧式直接调用

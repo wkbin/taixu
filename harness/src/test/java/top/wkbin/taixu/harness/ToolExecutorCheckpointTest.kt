@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.junit.After
@@ -219,6 +220,115 @@ class ToolExecutorCheckpointTest {
             assertTrue(settled.success)
             assertTrue(settled.output.contains("persisted note"))
         } finally { releaseAfter.complete(Unit); running.cancel() }
+    }
+
+    @Test fun `parallel reads publish in model order and write is visible to the next read`() = runBlocking {
+        withTimeout(15_000) {
+            File(root, "a.txt").writeText("before")
+            File(root, "b.txt").writeText("other")
+            val runtime = RoomHarnessRuntimeRepository(database.harnessRuntimeDao())
+            val logger = AppLogger(context, SensitiveDataRedactor { it })
+            val store = SessionTreeStore(runtime, Json, logger)
+            val events = HarnessEventBus()
+            val operations = OperationCoordinator(runtime, Json, events)
+            val tracker = CurrentSessionTracker()
+            val preferences = AgentPreferences(SettingsDataStore(context, SecretManager()))
+            val slowEntered = CompletableDeferred<Unit>()
+            val fastFinished = CompletableDeferred<Unit>()
+            val releaseSlow = CompletableDeferred<Unit>()
+            val started = mutableListOf<String>()
+            val hook = checkpoint(before = { request ->
+                val providerId = request.call.id.substringBeforeLast('_')
+                started += providerId
+                if (providerId == "slow") { slowEntered.complete(Unit); releaseSlow.await() }
+                if (providerId == "call-write") {
+                    assertEquals(listOf("slow", "fast"), store.load("session").filterIsInstance<ToolResult>().map { it.toolCallId.substringBeforeLast('_') })
+                }
+                ToolGateDecision.Allow
+            }, after = { request, _ ->
+                if (request.call.id.substringBeforeLast('_') == "fast") fastFinished.complete(Unit)
+                null
+            })
+            val runner = HarnessToolRoundRunner(
+                executor(hook), sessions, Json, operations, SessionMessageProjector(store, tracker),
+                SessionStateMirrors(tracker), AgentEventLogger(preferences, logger), ToolRoundDispatcher(),
+            )
+            val operation = operations.acceptRun("session", UserMessage("user", 1, "read write read"))
+            val specs = listOf(
+                ApiToolCallSpec("slow", "read", """{"path":"a.txt"}"""),
+                ApiToolCallSpec("fast", "read", """{"path":"b.txt"}"""),
+                ApiToolCallSpec("call-write", "write", call.args.toString()),
+                ApiToolCallSpec("after-write", "read", """{"path":"a.txt"}"""),
+            )
+            val running = async {
+                runner.executeToolCalls("session", specs, null, "", false,
+                    ModelConfig("test", "test", "test", "https://example.invalid", null),
+                    operation, 0, RunMetrics(1), ToolCallLoopDetector())
+            }
+            try {
+                slowEntered.await()
+                fastFinished.await()
+                assertEquals(listOf("slow", "fast"), started)
+                assertTrue(store.load("session").filterIsInstance<ToolResult>().isEmpty())
+                assertEquals("before", File(root, "a.txt").readText())
+                releaseSlow.complete(Unit)
+                assertTrue(running.await())
+                val results = store.load("session").filterIsInstance<ToolResult>()
+                assertEquals(specs.map { it.id }, results.map { it.toolCallId.substringBeforeLast('_') })
+                assertTrue(results.all { it.success })
+                assertTrue(results.first().output.contains("before"))
+                assertTrue(results.last().output.contains("written"))
+                assertEquals("written", File(root, "a.txt").readText())
+                assertEquals(results.map { it.toolCallId }, store.load("session").filterIsInstance<ToolCall>().map { it.id })
+            } finally { releaseSlow.complete(Unit); running.cancel() }
+        }
+    }
+
+    @Test fun `main preflight rejects unknown and invalid calls before executing wrapped write`() = runBlocking {
+        val runtime = RoomHarnessRuntimeRepository(database.harnessRuntimeDao())
+        val logger = AppLogger(context, SensitiveDataRedactor { it })
+        val store = SessionTreeStore(runtime, Json, logger)
+        val operations = OperationCoordinator(runtime, Json, HarnessEventBus())
+        val tracker = CurrentSessionTracker()
+        val started = mutableListOf<HarnessTool>()
+        val runner = HarnessToolRoundRunner(
+            executor(checkpoint(before = { started += it.call.tool; ToolGateDecision.Allow })), sessions,
+            Json, operations, SessionMessageProjector(store, tracker), SessionStateMirrors(tracker),
+            AgentEventLogger(AgentPreferences(SettingsDataStore(context, SecretManager())), logger), ToolRoundDispatcher(),
+        )
+        val operation = operations.acceptRun("session", UserMessage("user", 1, "write"))
+        val specs = listOf(
+            ApiToolCallSpec("unknown", "execute", "{"),
+            ApiToolCallSpec("invalid", "WRITE", "{}"),
+            ApiToolCallSpec("valid", "WRITE", """{"arguments":{"path":"a.txt","content":"written"}}"""),
+        )
+        assertTrue(runner.executeToolCalls("session", specs, null, "", false,
+            ModelConfig("test", "test", "test", "https://example.invalid", null),
+            operation, 0, RunMetrics(1), ToolCallLoopDetector()))
+        assertEquals(listOf(HarnessTool.WRITE), started)
+        assertEquals("written", File(root, "a.txt").readText())
+        val results = store.load("session").filterIsInstance<ToolResult>()
+        assertTrue(results[0].output.contains("未知工具"))
+        assertTrue(results[1].output.contains("缺少必填参数 path"))
+        assertTrue(results[2].success)
+    }
+
+    @Test fun `lane lease checks the same wrapped path that the real file backend writes`() = runBlocking {
+        val runtime = RoomHarnessRuntimeRepository(database.harnessRuntimeDao())
+        val operations = OperationCoordinator(runtime, Json, HarnessEventBus())
+        val operation = operations.acceptRun("session", UserMessage("user", 1, "write"), "child")
+        val backend = executor(checkpoint())
+        val runner = top.wkbin.taixu.harness.subagent.SubagentToolRoundRunner(
+            operations, Json, ToolRoundDispatcher(),
+        ) { call, session, _, _ -> backend.execute(call, session, allowApprovalRequest = false) }
+        runner.execute(listOf(
+            ApiToolCallSpec("outside", "write", """{"arguments":{"path":"outside.txt","content":"forbidden"}}"""),
+            ApiToolCallSpec("allowed", "write", """{"arguments":{"path":"a.txt","content":"written"}}"""),
+        ), "session", "", ModelConfig("test", "test", "test", "https://example.invalid", null),
+            operation, 0, null, listOf("a.txt"))
+        assertFalse(File(root, "outside.txt").exists())
+        assertEquals("written", File(root, "a.txt").readText())
+        assertEquals(listOf("write outside.txt"), runner.blockedWrites)
     }
 
     private inline fun <reified T> unusedPort(): T = Proxy.newProxyInstance(

@@ -93,7 +93,11 @@ class HarnessApprovalBoundaryTest {
             val operationId = operations.acceptRun("session", UserMessage("user", 1L, "Ask me"))
             try {
                 runner.executeToolCalls(
-                    "session", listOf(ApiToolCallSpec("call", toolName, arguments)),
+                    "session", listOf(
+                        ApiToolCallSpec("call", toolName, arguments),
+                        ApiToolCallSpec("later-read", "read", """{"path":"after-approval.txt"}"""),
+                        ApiToolCallSpec("later-write", "write", """{"path":"after-approval.txt","content":"unexpected"}"""),
+                    ),
                     null, "/workspace/test", false,
                     ModelConfig("test", "test", "test", "https://example.invalid", null),
                     operationId, 0, RunMetrics(1L), ToolCallLoopDetector(),

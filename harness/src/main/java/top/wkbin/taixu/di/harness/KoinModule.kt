@@ -108,7 +108,7 @@ val harnessModule = module {
 
     single<ApprovalPolicyEngine> { ApprovalPolicyEngine(pathResolver = get()) }
 
-    single<BuildScriptToolExecutor> { BuildScriptToolExecutor(repository = get()) }
+    single<BuildScriptToolExecutor> { BuildScriptToolExecutor(repository = get(), environments = get()) }
 
     single<SessionTurnCoordinator> {
         SessionTurnCoordinatorImpl(preferences = get(), logger = get())
@@ -145,6 +145,7 @@ val harnessModule = module {
             branchSummarizer = get(),
             skillEvolutionAdvisor = get(),
             turnCoordinator = get(),
+            executionEnvironments = get(),
         )
     }
     single<SessionControl> { get<HarnessLoop>() }
@@ -192,6 +193,7 @@ val harnessModule = module {
     includes(providerModule)
     single<ProviderResponseNormalizer> { ProviderResponseNormalizer(json = get()) }
 
+    single { top.wkbin.taixu.harness.SubagentSummaryPublisher(get(), get(), get(), get(), get()) }
     single<SubagentOrchestrator> {
         SubagentOrchestrator(
             sessionDao = get(),
@@ -203,13 +205,12 @@ val harnessModule = module {
             fileAccess = get(),
             providerClient = get(),
             logger = get(),
+            summaryPublisher = get(),
         )
     }
 
     includes(toolBackendModule)
-
     single<ToolRoundDispatcher> { ToolRoundDispatcher() }
-
     single<TurnRunner> { TurnRunner(normalizer = get()) }
 
     single<ApprovalResumePolicy> { ApprovalResumePolicy(sessionDao = get(), operationCoordinator = get()) }
@@ -230,9 +231,9 @@ val harnessModule = module {
             store = get(),
             fileAccess = get(),
             conversationRewinder = get(),
+            environments = get(),
         )
     }
-
     single<SessionForkConversationRewinder> {
         SessionForkConversationRewinder(
             sessionDao = get(),
@@ -291,8 +292,7 @@ val harnessModule = module {
     }
 
     single<HarnessEventBus> { HarnessEventBus() }
-
-    single<LinuxMcpStdioChannelFactory> { LinuxMcpStdioChannelFactory(linuxRuntime = get(), commandBuilder = get()) }
+    single<LinuxMcpStdioChannelFactory> { LinuxMcpStdioChannelFactory(linuxRuntime = get(), commandBuilder = get(), environments = get()) }
 
     single<McpCommandBuilder> { McpCommandBuilder() }
 
@@ -481,16 +481,16 @@ val harnessModule = module {
             context = get(),
             providerClient = get(),
             toolExecutor = { get<ToolExecutor>() },
+            environments = get(),
             treeStore = get(),
             operations = get(),
             settingsDataStore = get(),
             promptAssets = get(),
             json = get(),
+            toolRoundDispatcher = get(),
         )
     }
-
     single<AgentStateMachine> { AgentStateMachine(repository = get(), logger = get()) }
-
     factory<PassthroughNodeExecutor> { PassthroughNodeExecutor() }
 
     factory<ApprovalNodeExecutor> { ApprovalNodeExecutor(broker = get()) }

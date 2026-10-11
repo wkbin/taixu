@@ -1,12 +1,9 @@
 package top.wkbin.taixu.harness
 
 import top.wkbin.taixu.core.database.HarnessSessionRepository
-import top.wkbin.taixu.harness.mcp.McpToolApiName
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import top.wkbin.taixu.harness.core.DurableToolRunner
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -15,6 +12,7 @@ import top.wkbin.taixu.harness.validation.ToolSchemaValidator
 import top.wkbin.taixu.harness.validation.ToolCallLoopDetector
 import top.wkbin.taixu.harness.metrics.RunMetrics
 import top.wkbin.taixu.harness.effects.ToolReplayPolicy
+import top.wkbin.taixu.harness.effects.toolExecutionFailureResult
 import top.wkbin.taixu.harness.operation.OperationCoordinator
 import top.wkbin.taixu.harness.events.AgentEventLogger
 import top.wkbin.taixu.harness.projection.SessionMessageProjector
@@ -104,7 +102,7 @@ class HarnessToolRoundRunner(
         )
     }
 
-    /** 参数解析 → 未知工具 → Schema 校验 → 死循环检测（串行 Phase A）→ 受限并发执行与结果落盘（Phase B）；返回本回合是否有成功调用 */
+    /** 名称校验 → 参数解析 → Schema 校验 → 死循环检测（串行 Phase A）→ 受限并发执行与结果落盘（Phase B）；返回本回合是否有成功调用 */
     suspend fun executeToolCalls(
         sessId: String,
         specs: List<ApiToolCallSpec>,
@@ -126,7 +124,7 @@ class HarnessToolRoundRunner(
             val toolNameTrimmed = spec.name.trim()
             // 工具名校验必须在参数解析之前：名字未知时（哪怕参数为空/非法）
             // 也要第一时间回写真实工具清单，否则模型会在"解析失败"上盲目重试。
-            if (toolNameTrimmed.lowercase() !in KNOWN_TOOL_NAMES && !toolNameTrimmed.startsWith("mcp__")) {
+            if (!ToolCallContract.isKnownName(toolNameTrimmed)) {
                 appendToolCallAndResult(
                     sessId = sessId,
                     spec = spec,
@@ -134,7 +132,7 @@ class HarnessToolRoundRunner(
                     args = buildJsonObject {},
                     reasoning = reasoning,
                     rawToolName = toolNameTrimmed,
-                    output = unknownToolGuidance(toolNameTrimmed, effectiveModel),
+                    output = ToolCallContract.unknownGuidance(toolNameTrimmed, effectiveModel),
                 )
                 loopDetector.recordSettled(toolNameTrimmed, buildJsonObject {}, success = false)
                 metrics.toolCallRecorded(failed = true)
@@ -210,16 +208,17 @@ class HarnessToolRoundRunner(
         if (executable.isEmpty()) return false
 
         // —— Phase B：受限并发执行。消息树落库（toolIntent / publishPersisted / toolSettled）
-        // 依赖 lane.leafId 串链，必须串行，由 publicationMutex 保证；
+        // 依赖 lane.leafId 串链；合法调用的意图与结果分别按模型顺序发布，执行体可并行；
         // 只读工具在并发许可内同时执行，变更类工具按工作区互斥（跨工作区不互相阻塞）。
-        val publicationMutex = Mutex()
+        val publication = OrderedToolPublication(executable.size)
         val roundHadSuccess = AtomicBoolean(false)
         val approvalPauseRequested = AtomicBoolean(false)
         toolRoundDispatcher.dispatch(
-            items = executable,
+            items = executable.withIndex().toList(),
             mutationScope = sessionWorkspace,
-            isParallelSafe = { it.tool in PARALLEL_SAFE_TOOLS || it.tool in SELF_COORDINATED_TOOLS },
-        ) { item, pause ->
+            isParallelSafe = { ToolSchedulingPolicy.isParallelSafe(it.value.tool) },
+            needsMutationLock = { ToolSchedulingPolicy.needsMutationLock(it.value.tool) },
+        ) { (index, item), pause ->
             if (pause.isAborted()) return@dispatch
             val toolCall = ToolCall(
                 // Preserve the provider protocol id prefix with a unique suffix across
@@ -234,7 +233,7 @@ class HarnessToolRoundRunner(
             val toolStart = now()
             DurableToolRunner.run<ToolResult>(
                 commitIntent = {
-                    publicationMutex.withLock {
+                    publication.intent(index) {
                         agentEventLogger.log(sessId, "ToolCall", "Tool=${item.tool.name}, CallId=${toolCall.id}, ArgumentCount=${item.args.size}")
                         operationCoordinator.toolIntent(
                             operationId = operationId,
@@ -255,11 +254,11 @@ class HarnessToolRoundRunner(
                     )
                 },
                 executionFailure = { throwable ->
-                    ToolResult(newId(), now(), toolCall.id, false, "工具执行异常：${friendly(throwable)}")
+                    toolExecutionFailureResult(toolCall, "工具执行异常：${friendly(throwable)}")
                 },
                 commitResult = { outcome ->
-                    publicationMutex.withLock {
-                        val duration = now() - toolStart
+                    val duration = now() - toolStart
+                    publication.result(index) {
                         agentEventLogger.log(sessId, "ToolResult", "Tool=${item.tool.name}, CallId=${toolCall.id}, Success=${outcome.success}, Duration=${duration}ms, OutputChars=${outcome.output.length}, AwaitingApproval=${outcome.awaitingApproval}")
                         if (outcome.awaitingApproval) {
                             metrics.approvalRequested()
@@ -288,101 +287,16 @@ class HarnessToolRoundRunner(
         return roundHadSuccess.get()
     }
 
-    /**
-     * 未知工具的可纠正错误：不写死固定话术，而是列出当前真实可用的全部工具名
-     * （原生工具 + 已启用 MCP 的实际 API 名），并按编辑距离提示最接近的候选。
-     * 模型幻觉出工具名（如 fetchWebContent）时能一次拿到正确名字，不再反复编造。
-     */
-    private fun unknownToolGuidance(called: String, model: ModelConfig): String {
-        val nativeTools = KNOWN_TOOL_NAMES.sorted()
-        val mcpTools = model.dynamicMcpTools
-        val mcpList = if (mcpTools.isEmpty()) {
-            "（当前没有已启用的 MCP 工具）"
-        } else {
-            mcpTools.joinToString("；") { tool ->
-                "${McpToolApiName.encode(tool)}（${tool.serverName}·${tool.name}）"
-            }
-        }
-        val target = called.lowercase()
-        val nearest = (nativeTools + mcpTools.map { McpToolApiName.encode(it) })
-            .mapNotNull { candidate ->
-                val distance = levenshtein(target, candidate.lowercase())
-                if (distance <= (target.length / 2).coerceAtLeast(3)) candidate to distance else null
-            }
-            .minByOrNull { it.second }
-            ?.first
-        return buildString {
-            append("未知工具：$called。工具名不可编造或猜测，必须从下列清单中原样选取。")
-            append("原生工具：${nativeTools.joinToString(" / ")}。")
-            append("已启用 MCP 工具：$mcpList。")
-            nearest?.let { append("最接近的候选是 $it，是否想调用它？") }
-        }
-    }
-
-    private fun levenshtein(a: String, b: String): Int {
-        if (a == b) return 0
-        if (a.isEmpty()) return b.length
-        if (b.isEmpty()) return a.length
-        var prev = IntArray(b.length + 1) { it }
-        for (i in 1..a.length) {
-            val current = IntArray(b.length + 1)
-            current[0] = i
-            for (j in 1..b.length) {
-                current[j] = minOf(
-                    prev[j] + 1,
-                    current[j - 1] + 1,
-                    prev[j - 1] + if (a[i - 1] == b[j - 1]) 0 else 1,
-                )
-            }
-            prev = current
-        }
-        return prev[b.length]
-    }
-
     private fun now(): Long = System.currentTimeMillis()
     private fun newId(): String = UUID.randomUUID().toString()
     private fun friendly(throwable: Throwable): String =
         throwable.message?.take(200) ?: throwable::class.simpleName.orEmpty()
     companion object {
-        // MCP 的 apiName "mcp" 只是历史回放别名，不是模型可直接调用的工具；
-        // 剔除后模型误调 "mcp" 会落入 unknownToolGuidance，拿到真实 mcp__ 工具清单自我纠正。
-        // "subagent"/"invoke_dual_agent" 是 invoke_subagent 的历史别名与双智能体变体
-        // （ProviderClient 会向模型声明 invoke_dual_agent），必须一并放行，否则被自家拦截。
-        val KNOWN_TOOL_NAMES: Set<String> = HarnessTool.entries
-            .filter { it != HarnessTool.MCP }
-            .map { HarnessApiMapper.apiName(it) }
-            .toSet() + "subagent" + "invoke_dual_agent" + "use_capability"
+        val KNOWN_TOOL_NAMES: Set<String> = ToolCallContract.nativeNames
 
         internal fun parseArguments(json: Json, raw: String): JsonObject =
-            if (raw.isBlank()) buildJsonObject {} else {
-                json.parseToJsonElement(raw) as? JsonObject
-                    ?: throw IllegalArgumentException("参数不是 JSON 对象")
-            }
+            ToolCallContract.parseArguments(json, raw)
 
-        /**
-         * 可并发执行的只读/低风险工具白名单：互不共享可变状态（Room 由 SQLite 串行化写入）。
-         * 其余工具（write/edit/base/process/host/download/build_script/mcp）具有
-         * 外部副作用，执行时全局互斥。
-         */
-        private val PARALLEL_SAFE_TOOLS: Set<HarnessTool> = setOf(
-            HarnessTool.READ,
-            HarnessTool.HISTORY_SEARCH,
-            HarnessTool.HISTORY_READ,
-            HarnessTool.LOAD_RULE,
-            HarnessTool.MEMORY,
-            HarnessTool.PLAN,
-            HarnessTool.SCRATCHPAD,
-        )
-
-        /**
-         * 自行协调写隔离、因此不参与变更互斥的编排型工具。
-         *
-         * invoke_subagent 是一次可达 15 分钟的整批编排：它内部按 write_paths 切波、
-         * 逐个子任务串行拿写租约，工作区级互斥对它没有额外保护作用。让它整批持锁会把
-         * 同工作区的其他 base/write/edit 一起挡住十几分钟（实测另一会话的 BASE 因此
-         * 等了约 70 秒）。
-         */
-        private val SELF_COORDINATED_TOOLS: Set<HarnessTool> = setOf(HarnessTool.SUBAGENT)
     }
 }
 

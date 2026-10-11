@@ -10,11 +10,15 @@ import top.wkbin.taixu.harness.workflow.WorkflowSignalBus
 import top.wkbin.taixu.runtime.LinuxRuntime
 import top.wkbin.taixu.runtime.shell.ProcessType
 import top.wkbin.taixu.runtime.shell.ShellCommand
+import top.wkbin.taixu.runtime.environment.BoundLinuxCommands
+import top.wkbin.taixu.runtime.environment.ExecutionCommands
+import top.wkbin.taixu.harness.environment.SessionExecutionEnvironments
 
 data class LinuxCommandRequest(
     val tool: HarnessTool,       // BASE 或 PROCESS
     val args: JsonObject,
     val workspace: String,
+    val sessionId: String = "",
 )
 
 /**
@@ -29,18 +33,25 @@ class LinuxCommandToolBackend(
     private val pathResolver: HarnessPathResolver,
     private val settingsDataStore: AgentPreferences? = null,
     private val workflowSignals: WorkflowSignalBus? = null,
+    private val environments: SessionExecutionEnvironments? = null,
 ) : ToolBackend<LinuxCommandRequest, Pair<Boolean, String>> {
 
-    override suspend fun execute(request: LinuxCommandRequest): Pair<Boolean, String> = when (request.tool) {
-        HarnessTool.BASE -> executeBase(request.args, request.workspace)
-        HarnessTool.PROCESS -> executeProcess(request.args, request.workspace)
-        else -> throw IllegalArgumentException("Unsupported tool: ${request.tool}")
+    override suspend fun execute(request: LinuxCommandRequest): Pair<Boolean, String> {
+        val environment = environments?.environment(request.sessionId, request.workspace)
+        val commands = environment ?: BoundLinuxCommands(linuxRuntime, null, AGENT_PROCESS_PREFIX)
+        val directory: (String?) -> String = { explicit -> environment?.workingDirectory(explicit)
+            ?: pathResolver.resolveWorkingDirectory(explicit, request.workspace) }
+        return when (request.tool) {
+            HarnessTool.BASE -> executeBase(request.args, request.workspace, commands, directory)
+            HarnessTool.PROCESS -> executeProcess(request.args, commands, directory)
+            else -> throw IllegalArgumentException("Unsupported tool: ${request.tool}")
+        }
     }
 
-    private suspend fun executeBase(args: JsonObject, workspace: String): Pair<Boolean, String> {
+    private suspend fun executeBase(args: JsonObject, workspace: String, commands: ExecutionCommands, directory: (String?) -> String): Pair<Boolean, String> {
         val command = JsonArgs.requireString(args, "command")
         require(command.length <= MAX_COMMAND_LENGTH) { "命令过长（${command.length} 字符，上限 $MAX_COMMAND_LENGTH）" }
-        val cwd = pathResolver.resolveWorkingDirectory(args["cwd"]?.jsonPrimitive?.content, workspace)
+        val cwd = directory(args["cwd"]?.jsonPrimitive?.content)
         val commandOutputCompressionEnabled = settingsDataStore?.let { prefs ->
             runCatching { prefs.commandOutputCompressionEnabled.first() }.getOrDefault(true)
         } ?: true
@@ -56,7 +67,7 @@ class LinuxCommandToolBackend(
             min = MIN_BASE_TIMEOUT_SECONDS,
             max = MAX_BASE_TIMEOUT_SECONDS,
         )
-        val result = linuxRuntime.execute(
+        val result = commands.execute(
             ShellCommand(
                 commandLine = preparedCommand.commandLine,
                 workingDirectory = cwd,
@@ -95,25 +106,23 @@ class LinuxCommandToolBackend(
         return isSuccess to body
     }
 
-    private suspend fun executeProcess(args: JsonObject, workspace: String): Pair<Boolean, String> {
+    private suspend fun executeProcess(args: JsonObject, commands: ExecutionCommands, directory: (String?) -> String): Pair<Boolean, String> {
         val action = JsonArgs.requireString(args, "action").trim().lowercase()
         return when (action) {
             "start" -> {
                 val externalId = requireProcessId(args)
-                val internalId = processId(externalId)
                 val command = JsonArgs.requireString(args, "command")
                 require(command.length <= MAX_COMMAND_LENGTH) { "命令过长（${command.length} 字符，上限 $MAX_COMMAND_LENGTH）" }
-                val cwd = pathResolver.resolveWorkingDirectory(args["cwd"]?.jsonPrimitive?.content, workspace)
-                val existing = linuxRuntime.listBackground().firstOrNull { it.id == internalId && it.session.isAlive }
+                val cwd = directory(args["cwd"]?.jsonPrimitive?.content)
+                val existing = commands.listBackground().firstOrNull { it.id == externalId && it.session.isAlive }
                 require(existing == null) { "后台进程 $externalId 已在运行；请先查询状态或停止它" }
-                val managed = linuxRuntime.startBackground(
-                    id = internalId,
+                val managed = commands.startBackground(
+                    id = externalId,
                     command = ShellCommand(
                         commandLine = command,
                         workingDirectory = cwd,
                         timeoutMs = Long.MAX_VALUE,
                     ),
-                    type = ProcessType.COMMAND,
                 )
                 true to buildString {
                     append("后台进程已启动：").append(externalId)
@@ -124,7 +133,7 @@ class LinuxCommandToolBackend(
             }
             "status" -> {
                 val externalId = requireProcessId(args)
-                val managed = linuxRuntime.listBackground().firstOrNull { it.id == processId(externalId) }
+                val managed = commands.listBackground().firstOrNull { it.id == externalId }
                     ?: return false to "未找到后台进程：$externalId"
                 true to buildString {
                     append("后台进程：").append(externalId)
@@ -136,23 +145,23 @@ class LinuxCommandToolBackend(
             "logs" -> {
                 val externalId = requireProcessId(args)
                 val tailLines = JsonArgs.optionalLong(args, "tail_lines", DEFAULT_PROCESS_LOG_LINES, 1L, MAX_PROCESS_LOG_LINES).toInt()
-                val logs = linuxRuntime.getBackgroundLogs(processId(externalId)).takeLast(tailLines)
+                val logs = commands.getBackgroundLogs(externalId).takeLast(tailLines)
                 true to if (logs.isEmpty()) "后台进程 $externalId 暂无日志" else logs.joinToString("\n")
             }
             "list" -> {
-                val managed = linuxRuntime.listBackground().filter { it.id.startsWith(AGENT_PROCESS_PREFIX) }
+                val managed = commands.listBackground()
                 true to if (managed.isEmpty()) {
                     "当前没有 Agent 管理的后台进程"
                 } else {
                     managed.joinToString("\n") {
-                        val externalId = it.id.removePrefix(AGENT_PROCESS_PREFIX)
+                        val externalId = it.id
                         "$externalId · ${if (it.session.isAlive) "运行中" else "已退出"} · ${(System.currentTimeMillis() - it.startedAt).coerceAtLeast(0L)} ms"
                     }
                 }
             }
             "stop" -> {
                 val externalId = requireProcessId(args)
-                val stopped = linuxRuntime.stopBackground(processId(externalId))
+                val stopped = commands.stopBackground(externalId)
                 stopped to if (stopped) "后台进程已停止：$externalId" else "未找到后台进程：$externalId"
             }
             else -> false to "不支持的 process action：$action；可用 start/status/logs/list/stop"
@@ -164,8 +173,6 @@ class LinuxCommandToolBackend(
         require(PROCESS_ID.matches(id)) { "进程 id 仅允许小写字母、数字、点、下划线和连字符，长度 1-64" }
         return id
     }
-
-    private fun processId(externalId: String): String = AGENT_PROCESS_PREFIX + externalId
 
     companion object {
         const val MIN_BASE_TIMEOUT_SECONDS = 1L

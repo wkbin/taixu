@@ -5,7 +5,6 @@ import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import top.wkbin.taixu.core.datastore.AgentPreferences
 import top.wkbin.taixu.harness.ApiMessage
@@ -15,13 +14,13 @@ import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.ProviderClient
 import top.wkbin.taixu.harness.ToolCallMode
 import top.wkbin.taixu.harness.ToolExecutor
+import top.wkbin.taixu.harness.ToolRoundDispatcher
 import top.wkbin.taixu.harness.TextToolCallCodec
 import top.wkbin.taixu.harness.operation.OperationCoordinator
 import top.wkbin.taixu.harness.prompt.PromptAssetLoader
 import top.wkbin.taixu.harness.session.SessionTreeStore
 import top.wkbin.taixu.harness.R
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.NonCancellable
 import top.wkbin.taixu.harness.ApiToolCallSpec
 import top.wkbin.taixu.harness.ChatResult
 import top.wkbin.taixu.harness.ModelConfig
@@ -56,6 +55,8 @@ class SubagentLaneRunner(
     private val settingsDataStore: AgentPreferences,
     private val promptAssets: PromptAssetLoader,
     private val json: Json,
+    private val toolRoundDispatcher: ToolRoundDispatcher,
+    private val environments: top.wkbin.taixu.harness.environment.SessionExecutionEnvironments? = null,
 ) {
     suspend fun run(
         sessionId: String,
@@ -77,8 +78,9 @@ class SubagentLaneRunner(
     ): SubagentLaneResult {
         val user = UserMessage(UUID.randomUUID().toString(), now(), prompt)
         val operationId = operations.acceptRun(sessionId, user, laneName)
-        val toolRoundRunner = SubagentToolRoundRunner(operations, json) { call, session, cwd, operation ->
-            toolExecutor().execute(call, session, cwd, allowApprovalRequest = false, operationId = operation)
+        val finalizer = SubagentLaneFinalizer(operations) { environments?.closeOwner(sessionId, operationId) }
+        val toolRoundRunner = SubagentToolRoundRunner(operations, json, toolRoundDispatcher) { call, session, cwd, operation ->
+            toolExecutor().execute(call, session, cwd, allowApprovalRequest = false, operationId = operation, resourceOwner = operation)
         }
         var finalText = ""
         // 需要审批而被跳过的调用、被写租约拦截的写入：两者都会让"看起来收场了"实际没做完，
@@ -151,7 +153,7 @@ class SubagentLaneRunner(
                     operations.providerSettled(operationId, null, usage = usageEntity, round = round)
                 }
                 if (roundCalls.isEmpty() && !forceFinalAnswer && textNormalization.hasUnresolvedMarkers) {
-                    operations.finish(sessionId, "failed", details = "无法解析文本工具调用", laneName = laneName)
+                    finalizer.finish(sessionId, "failed", details = "无法解析文本工具调用", laneName = laneName)
                     return SubagentLaneResult(
                         success = false,
                         summary = "模型返回了无法解析的文本工具调用，未将其误判为任务完成",
@@ -173,7 +175,7 @@ class SubagentLaneRunner(
                         blockedWrites = blockedWrites,
                         unresolvedWriteFailures = failedWrites.keys.toList(),
                     )
-                    operations.finish(
+                    finalizer.finish(
                         sessionId,
                         if (verdict.accepted) "completed" else "failed",
                         responseId.takeIf { assistantText.isNotBlank() },
@@ -196,7 +198,7 @@ class SubagentLaneRunner(
                     reasoning = result.reasoningContent, writePaths = writePaths,
                 )
             }
-            operations.finish(sessionId, "failed", details = "max rounds", laneName = laneName)
+            finalizer.finish(sessionId, "failed", details = "max rounds", laneName = laneName)
             SubagentLaneResult(
                 success = false,
                 summary = buildString {
@@ -212,18 +214,13 @@ class SubagentLaneRunner(
                 blockedWrites = blockedWrites.toList(),
             )
         } catch (cancellation: CancellationException) {
-            // 结构化取消（用户停止或编排层超时）必须向上重抛；
-            // 否则 lane operation 永远停留在 RUNNING，形成僵尸行。
-            // finish 自身是挂起点，需在 NonCancellable 下落盘（与主循环清理链同一模式）。
-            withContext(NonCancellable) {
-                operations.finish(sessionId, "aborted", details = "已取消", laneName = laneName)
-            }
+            finalizer.interrupted(sessionId, laneName, operationId, "aborted", "已取消")
             throw cancellation
         } catch (throwable: Throwable) {
-            operations.finish(sessionId, "failed", details = throwable.message, laneName = laneName)
+            val repairOutput = finalizer.interrupted(sessionId, laneName, operationId, "failed", throwable.message)
             SubagentLaneResult(
                 success = false,
-                summary = throwable.message ?: "子智能体执行失败",
+                summary = listOfNotNull(throwable.message ?: "子智能体执行失败", repairOutput).joinToString("\n\n"),
                 toolCallCount = toolRoundRunner.toolCallCount,
                 termination = SubagentTermination.FAILED,
                 pendingApprovals = deferredApprovals.toList(),
@@ -345,7 +342,7 @@ internal fun laneSummary(
         }
         if (failedWrites.isNotEmpty()) {
             appendLine()
-            appendLine("**尝试写入但最终失败的目标**（这些文件并不存在或未更新）：")
+            appendLine("**未确认成功的写入目标**（可能已部分写入，请按各项说明核验）：")
             failedWrites.forEach { (target, reason) -> appendLine("- $target → $reason") }
         }
         if (roundText.isNotBlank()) {

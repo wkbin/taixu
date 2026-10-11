@@ -14,6 +14,20 @@ import kotlinx.serialization.json.buildJsonArray
 
 class ToolSchemaValidatorTest {
 
+    @Test fun `builtin case and legacy names use the canonical validation schema`() {
+        assertEquals(ToolSchemaValidator.problemsFor("write", args()), ToolSchemaValidator.problemsFor("WRITE", args()))
+        assertEquals(ToolSchemaValidator.problemsFor("invoke_subagent", args()), ToolSchemaValidator.problemsFor("subagent", args()))
+        assertTrue(ToolSchemaValidator.problemsFor("subagent", args()).any { it.contains("缺少必填") })
+    }
+
+    @Test fun `capability wrapper cannot invent an action by unwrapping arguments`() {
+        val wrapped = schema("""{"arguments":{"action":"list"}}""")
+        assertTrue(ToolSchemaValidator.problemsFor("use_capability", wrapped).any { it.contains("缺少必填参数 action") })
+        assertTrue(ToolSchemaValidator.problemsFor("USE_CAPABILITY", args("action" to "list")).isEmpty())
+        val valid = schema("""{"action":"call","server":"host","tool":"lookup","arguments":{"file_path":"x","a.b":"y"}}""")
+        assertTrue(ToolSchemaValidator.problemsFor("use_capability", valid).isEmpty())
+    }
+
     @Test
     fun `MCP hook target and script parameters do not gain builtin aliases`() {
         val hookSchema = """{"type":"object","properties":{"type":{"type":"string"},"target":{"type":"string"}},"required":["type","target"]}"""

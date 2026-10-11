@@ -65,6 +65,7 @@ class SubagentOrchestrator(
     private val fileAccess: WorkspaceFileAccess,
     private val providerClient: ProviderClient,
     private val logger: AppLogger,
+    private val summaryPublisher: SubagentSummaryPublisher? = null,
 ) {
     /**
      * Application-wide budget: a three-agent fan-out should actually run three lanes at once,
@@ -143,7 +144,7 @@ class SubagentOrchestrator(
 
         // Completion order and lease waves must not change the user-requested presentation order.
         val orderedResults = results.sortedBy { outcome -> specs.indexOf(outcome.spec) }
-        val summaryMarkdown = paginateSummary(orderedResults, workspace)
+        val summaryMarkdown = paginateSummary(orderedResults, parentSessionId, workspace)
         logger.logAgent(
             parentSessionId,
             "SubagentBatch",
@@ -484,17 +485,11 @@ class SubagentOrchestrator(
      * 结果分页读取：汇总注入父上下文前先做预算控制。
      * 总量 ≤ [SUMMARY_INLINE_BUDGET] 字符 → 原样注入（保持现状，不破坏小批次体验）；
      * 超限 → 每个子任务输出截断为 [PER_TASK_INLINE_BUDGET] 字符，
-     * 完整结果落盘 `.taixu-subagent/<laneName-safe>.md`（工作区相对路径），
+     * 生产完整结果通过当前环境的产物接口保存（工作区相对路径），
      * 模型可用 read 工具按 offset/limit 分页读取。
      */
-    private suspend fun paginateSummary(outcomes: List<SubagentExecutionOutcome>, workspace: String): String =
-        paginateSubagentSummary(
-            outcomes,
-            workspace,
-            // 落盘必须与 ToolExecutor 的 read 走同一基准：汇总里给父智能体的是工作区相对路径，
-            // 用全局 fileAccess 写会落到应用根目录，模型随后 read 就会"提示有报告、实际读不到"。
-            if (workspace.isNotBlank()) fileAccess.withBase(workspace) else fileAccess,
-        )
+    private suspend fun paginateSummary(outcomes: List<SubagentExecutionOutcome>, session: String, workspace: String): String =
+        (summaryPublisher ?: SubagentSummaryPublisher(fileAccess)).publish(outcomes, session, workspace)
 
     internal data class SubagentExecutionOutcome(
         val spec: SubagentTaskSpec,
@@ -706,7 +701,7 @@ internal fun renderSummaryMarkdown(outcomes: List<SubagentOrchestrator.SubagentE
         }
     }
 
-private fun subagentBatchHeader(outcomes: List<SubagentOrchestrator.SubagentExecutionOutcome>): String {
+internal fun subagentBatchHeader(outcomes: List<SubagentOrchestrator.SubagentExecutionOutcome>): String {
     val succeeded = outcomes.count { it.isSuccess }
     val batchStatus = when (succeeded) {
         outcomes.size -> "全部成功"
@@ -729,7 +724,7 @@ private fun subagentBatchHeader(outcomes: List<SubagentOrchestrator.SubagentExec
  * 状态不再只有 ✅/⚠️ 两态：未完成时必须写出终止原因、待审批交接与被拦截的写入，
  * 否则父智能体（和用户）无法区分"做完了"与"收场了但没做完"。
  */
-private fun subagentOutcomeHeader(
+internal fun subagentOutcomeHeader(
     outcome: SubagentOrchestrator.SubagentExecutionOutcome,
     index: Int,
     includeModelBadge: Boolean,
@@ -784,60 +779,10 @@ private fun subagentTerminationLabel(termination: SubagentTermination): String =
     SubagentTermination.INCOMPLETE -> "收场但未产出可信结论"
     SubagentTermination.NEEDS_APPROVAL -> "有需要审批的操作未执行"
     SubagentTermination.WRITE_SCOPE_BLOCKED -> "写入被写租约拦截"
-    SubagentTermination.WRITE_FAILED -> "写入尝试失败，产物未落盘"
+    SubagentTermination.WRITE_FAILED -> "写入未确认成功，需核验实际状态"
     SubagentTermination.UNPARSEABLE_TOOL_CALL -> "文本工具调用无法解析"
     SubagentTermination.MAX_ROUNDS -> "用尽工具轮数预算"
     SubagentTermination.FAILED -> "执行异常"
     SubagentTermination.TIMEOUT -> "执行超时"
     SubagentTermination.CLAIM_DOWNGRADED -> "自报 complete 未被 host 凭据完全背书，降级为 partial"
-}
-
-/**
- * 结果分页读取：汇总注入父上下文前的预算控制。
- * 总量 ≤ [SUMMARY_INLINE_BUDGET] 字符 → 原样注入（保持现状，小批次体验不变）；
- * 超限 → 每个超长子任务输出截断为 [PER_TASK_INLINE_BUDGET] 字符，完整结果落盘
- * `.taixu-subagent/<laneName-safe>.md`（工作区相对路径），模型可用 read 工具按 offset/limit 分页读取。
- *
- * [fileAccess] 必须已经绑定到 [workspace]：返回给父智能体的是工作区相对路径，
- * 写入基准与 read 的基准不一致就会出现"提示有完整报告、实际读不到"。
- */
-internal suspend fun paginateSubagentSummary(
-    outcomes: List<SubagentOrchestrator.SubagentExecutionOutcome>,
-    workspace: String,
-    fileAccess: WorkspaceFileAccess,
-): String {
-    val full = renderSummaryMarkdown(outcomes)
-    if (full.length <= SUMMARY_INLINE_BUDGET || workspace.isBlank()) return full
-
-    val overflowTasks = outcomes.filter { it.summary.length > PER_TASK_INLINE_BUDGET }
-    val spillDir = ".taixu-subagent"
-    val spilled = mutableMapOf<String, String>() // laneName -> 相对路径
-    overflowTasks.forEach { outcome ->
-        val fileName = outcome.subSessionId
-            .filter { it.isLetterOrDigit() || it == '-' || it == ':' }
-            .replace(':', '-')
-            .takeLast(80) + ".md"
-        val relativePath = "$spillDir/$fileName"
-        // 落盘失败不阻塞：该任务按普通截断处理
-        if (fileAccess.write(relativePath, outcome.summary) is AppResult.Success) {
-            spilled[outcome.subSessionId] = relativePath
-        }
-    }
-
-    return buildString {
-        append(subagentBatchHeader(outcomes))
-        append("（本批输出总量超出注入预算，超长子任务已截断；完整结果可用 read 工具按 offset/limit 分页读取）\n\n")
-        outcomes.forEachIndexed { index, outcome ->
-            append(subagentOutcomeHeader(outcome, index, includeModelBadge = false))
-            append("- **子任务输出**：\n")
-            val spillPath = spilled[outcome.subSessionId]
-            if (spillPath != null) {
-                append(outcome.summary.take(PER_TASK_INLINE_BUDGET))
-                append("\n\n…（截断，共 ${outcome.summary.length} 字符。完整结果：read 路径 `$spillPath`）\n\n")
-            } else {
-                append(outcome.summary.trim())
-                append("\n\n")
-            }
-        }
-    }
 }

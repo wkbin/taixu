@@ -35,6 +35,7 @@
 
 - 识别范围：labelled secrets（password / secret / api_key / token / authorization / cookie…）、`Bearer xxx`、`sk-` / `AIza` / `xox` 品牌前缀、JSON 与脚本赋值中的密钥值、大陆手机号。
 - privacyMode 下叠加「已知密钥值遮蔽」：以 `LinuxEnvironmentManager` 中用户配置的环境变量值作为已知 secret 列表（`ToolExecutor.kt:96-104`）。
+- 已绑定的工具调用及子任务报告通过当前环境的 `outputSecrets` 获取已知值；本地后端固定发行版并在读取锁内复制快照，远端不会刷新手机当前发行版。子任务报告在保存到当前环境前完成同样的脱敏；刷新失败不会使用另一发行版的旧缓存。
 - 应用点：ToolExecutor 工具结果后处理（4 处调用）、`RequestDiagnosticsStore` 请求预览、浏览器 `SecretRedactingInterceptor`。
 - **局限（务必知道）**：正则启发式，不是密码学保证；无标签的随机串（如 HostBridge key 本身是 UUID hex）不在模式内；Base64 等编码变形与非赋值形态不保证命中。高危场景需叠加人工检查。
 - 请求诊断仅将脱敏后的有界预览和字段指纹交给 `RequestDiagnosticsRepository`，用 `SecretManager` 的 AndroidKeyStore AES/GCM 加密后原子写入 `noBackupFilesDir/request-diagnostics/requests.enc`。不保存请求头、原始请求体或媒体载荷；加密失败不回退明文。普通对话和文件内容仍可能保留，脱敏不等于匿名化。会话删除等待加密存档清理完成；存档排除系统备份，并受大小及格式校验约束。
@@ -80,6 +81,7 @@
 - `ApprovalPolicyEngine`：风险矩阵决定审批；`use_capability` 的 list / inspect / decline 为只读元操作免审；`use_capability(call)` 从 arguments 合成 `(server, tool)` 后套同一矩阵（`ApprovalPolicyEngine.kt:82-89, 305-331`）。
 - PLAN 模式：宿主侧硬拦截（`ToolExecutor → ApprovalPolicyEngine.planBlock`），提示词约束只是第二层。
 - 路径边界：`HarnessPathResolver` 与 Lane 写租约约束写入范围；`ToolCheckpoint` 只能观察 / 否决 / 追加脱敏说明，不能授予权限或替换结果状态（`docs/ARCHITECTURE.md`）。
+- 工具入口：主回合与 Lane 先检查工具名称，再解析并校验参数；未知名称不能借映射回退执行命令。Lane 对结构化写工具按执行器的参数视图检查租约，覆盖路径别名与包装参数；`base` 的任意 shell 写入仍不属于结构化路径租约检查范围。
 - 取消：`PrivilegeManager.cancelShellCommand` 同步终止对应 Shizuku/Root 宿主子进程。
 - MCP：工具 schema 不进 provider 可见面（`use_capability` 统一代理 + 护栏测试 `BuiltinToolContractTest`）；STDIO 服务器进程在 PRoot 沙箱内启动（`McpStdioTransport` → `McpStdioChannelFactory`），其 env 走 2.2 的 provider 通道。
 

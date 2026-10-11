@@ -1,6 +1,7 @@
 package top.wkbin.taixu.harness.checkpoint
 
 import top.wkbin.taixu.harness.WorkspaceFileAccess
+import top.wkbin.taixu.runtime.environment.ExecutionFiles
 
 /**
  * 恢复编排（prepare/commit 两段式）。前端/未来 MCP 只驱动这一套 API，
@@ -14,6 +15,7 @@ class RewindController(
     private val store: CheckpointStore,
     private val fileAccess: WorkspaceFileAccess,
     private val conversationRewinder: ConversationRewinder? = null,
+    private val environments: top.wkbin.taixu.harness.environment.SessionExecutionEnvironments? = null,
 ) {
     fun checkpoints(sessionId: String): List<CheckpointMeta> = store.checkpoints(sessionId)
 
@@ -33,8 +35,12 @@ class RewindController(
     )
 
     /** 执行已规划方案。workspace 用于 `withBase` 子工作区定位。 */
-    suspend fun commit(plan: RewindPlan, workspace: String = ""): RewindResult {
-        val activeFileAccess = if (workspace.isNotBlank()) fileAccess.withBase(workspace) else fileAccess
+    suspend fun commit(plan: RewindPlan, workspace: String = ""): RewindResult =
+        if (environments != null) environments.activity(plan.sessionId, workspace) { commitBound(plan, workspace) }
+        else commitBound(plan, workspace)
+
+    private suspend fun commitBound(plan: RewindPlan, workspace: String): RewindResult {
+        val activeFileAccess = filesFor(plan.sessionId, workspace)
         var restored = 0
         var deleted = 0
         val problems = mutableListOf<String>()
@@ -108,12 +114,17 @@ class RewindController(
      *
      * @return null = 当前没有可撤销的 rewind。
      */
-    suspend fun undoLastRewind(sessionId: String, workspace: String = ""): RewindResult? {
+    suspend fun undoLastRewind(sessionId: String, workspace: String = ""): RewindResult? =
+        if (environments != null) environments.activity(sessionId, workspace) { undoBound(sessionId, workspace) }
+        else undoBound(sessionId, workspace)
+
+    private suspend fun undoBound(sessionId: String, workspace: String): RewindResult? {
+        val activeFileAccess = filesFor(sessionId, workspace)
         val record = store.takeRewindUndo(sessionId) ?: return null
-        val activeFileAccess = if (workspace.isNotBlank()) fileAccess.withBase(workspace) else fileAccess
         var restored = 0
         var deleted = 0
         val conflicts = mutableListOf<String>()
+        val problems = mutableListOf<String>()
         record.undoSnaps.forEachIndexed { index, undoSnap ->
             val applied = record.applied.getOrNull(index) ?: return@forEachIndexed
             // 冲突基线 = rewind 实际写入的状态；不一致说明 rewind 之后又被改过
@@ -136,21 +147,26 @@ class RewindController(
             }
             if (ok) {
                 if (undoSnap.content == null) deleted++ else restored++
+            } else {
+                problems += undoSnap.path
             }
         }
-        val note = if (conflicts.isNotEmpty()) {
-            "以下文件在 rewind 后又被改动，已跳过撤销：${conflicts.joinToString("；")}"
-        } else {
-            null
-        }
+        val note = listOfNotNull(
+            conflicts.takeIf { it.isNotEmpty() }?.let { "以下文件在 rewind 后又被改动，已跳过撤销：${it.joinToString("；")}" },
+            problems.takeIf { it.isNotEmpty() }?.let { "以下文件撤销失败：${it.joinToString("；")}" },
+        ).joinToString("\n").ifEmpty { null }
         return RewindResult(
             filesRestored = restored,
             filesDeleted = deleted,
-            partial = conflicts.isNotEmpty(),
+            partial = conflicts.isNotEmpty() || problems.isNotEmpty(),
             note = note,
             conflicts = conflicts,
         )
     }
+
+    private suspend fun filesFor(session: String, workspace: String): ExecutionFiles =
+        if (environments != null) environments.environment(session, workspace).files
+        else if (workspace.isNotBlank()) fileAccess.withBase(workspace) else fileAccess
 
     /**
      * 当前文件是否在 store 的最后凭据之后又被改动过：
@@ -162,7 +178,7 @@ class RewindController(
     private suspend fun isExternallyModified(
         sessionId: String,
         snap: FileSnap,
-        activeFileAccess: WorkspaceFileAccess,
+        activeFileAccess: ExecutionFiles,
     ): Boolean {
         val expected = store.latestAfterImage(sessionId, snap.path) ?: return false
         val size = activeFileAccess.fileSizeOrNull(snap.path)

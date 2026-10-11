@@ -128,8 +128,9 @@ class ProcessRegistryImpl(
     }
 
     override suspend fun stop(id: String): Boolean = mutex.withLock {
-        val process = processes.remove(id) ?: return@withLock false
+        val process = processes[id] ?: return@withLock false
         process.session.close()
+        processes.remove(id, process)
         true
     }
 

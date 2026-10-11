@@ -2,6 +2,7 @@ package top.wkbin.taixu.runtime
 
 import android.os.Build
 import android.os.StatFs
+import top.wkbin.taixu.runtime.environment.boundLocalDistribution
 import top.wkbin.taixu.core.common.logging.AppLogger
 import top.wkbin.taixu.core.common.result.AppError
 import top.wkbin.taixu.core.common.result.AppResult
@@ -73,7 +74,6 @@ class LinuxRuntimeImpl(
     private val interactiveSessions = ConcurrentHashMap<LinuxSession, String>()
 
     override fun refreshInstalledDistros() {
-        // 兑现“刷新”语义：结构性变更后由各调用方走到这里，统一失效路径管理器缓存
         pathManager.invalidateInstalledDistrosCache()
         val ids = pathManager.listInstalledDistroIds()
         val active = _activeDistroId.value
@@ -495,7 +495,7 @@ class LinuxRuntimeImpl(
 
     override suspend fun execute(command: ShellCommand, distroId: String?): CommandResult = storageActivities.activity {
         ensureReady()
-        val safeDistro = distroId?.lowercase()?.trim()?.takeIf { it.isNotBlank() } ?: _activeDistroId.value
+        val safeDistro = boundLocalDistribution(distroId, _activeDistroId.value)
         val mounts = storageMounts()
         val execution = resolveExecutionLayout(safeDistro, command.useQemuCompatibility)
         shellExecutor.execute(
@@ -626,7 +626,7 @@ class LinuxRuntimeImpl(
         distroId: String?,
     ): PreparedInteractive {
         ensureReady()
-        val safeDistro = distroId?.lowercase()?.trim()?.takeIf { it.isNotBlank() } ?: _activeDistroId.value
+        val safeDistro = boundLocalDistribution(distroId, _activeDistroId.value)
         val effectiveConfig = if (config.commandLine == "/bin/bash -i") {
             val rootfs = pathManager.rootfsDir(safeDistro)
             val hasBash = File(rootfs, "bin/bash").exists() || File(rootfs, "usr/bin/bash").exists()
@@ -761,7 +761,7 @@ class LinuxRuntimeImpl(
             command = command,
             toolId = toolId,
             type = type,
-            distroId = distroId ?: _activeDistroId.value,
+            distroId = boundLocalDistribution(distroId, _activeDistroId.value),
             mounts = mounts,
         )
     }

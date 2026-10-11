@@ -1,4 +1,4 @@
-﻿{
+{
     "_doc": [
         "\u67b6\u6784\u68d8\u8f6e\u57fa\u7ebf\uff1a\u6536\u5f55\u5b58\u91cf\u8d85\u8fc7 maxFileLines \u7684\u6e90\u6587\u4ef6\uff08\u884c\u6570\u5feb\u7167\uff09\u3002",
         "\u89c4\u5219\uff1a\u6761\u76ee\u884c\u6570\u53ea\u80fd\u4e0b\u8c03\uff08\u4ee3\u7801\u7f29\u51cf\u540e\u5e94\u4e0b\u8c03\u6216\u5220\u9664\u6761\u76ee\uff09\uff1b\u6587\u4ef6\u884c\u6570\u8d85\u8fc7\u57fa\u7ebf\u503c = \u67b6\u6784\u8fdd\u89c4\u3002",
@@ -85,16 +85,16 @@
         "harness/src/main/java/top/wkbin/taixu/harness/AnthropicApi.kt": 644,
         "harness/src/main/java/top/wkbin/taixu/harness/ApprovalPolicyEngine.kt": 502,
         "harness/src/main/java/top/wkbin/taixu/harness/ContextWindowPolicy.kt": 1074,
-        "harness/src/main/java/top/wkbin/taixu/harness/HarnessLoop.kt": 1717,
+        "harness/src/main/java/top/wkbin/taixu/harness/HarnessLoop.kt": 1699,
         "harness/src/main/java/top/wkbin/taixu/harness/HarnessProviderRunner.kt": 672,
         "harness/src/main/java/top/wkbin/taixu/harness/ProviderClient.kt": 1399,
-        "harness/src/main/java/top/wkbin/taixu/harness/SubagentOrchestrator.kt": 843,
+        "harness/src/main/java/top/wkbin/taixu/harness/SubagentOrchestrator.kt": 788,
         "harness/src/main/java/top/wkbin/taixu/harness/ToolExecutor.kt": 1419,
         "harness/src/main/java/top/wkbin/taixu/harness/compaction/CompactionSummarizer.kt": 407,
         "harness/src/main/java/top/wkbin/taixu/harness/dual/DualAgentCoordinator.kt": 448,
         "harness/src/main/java/top/wkbin/taixu/harness/mcp/McpHttpTransport.kt": 686,
         "harness/src/main/java/top/wkbin/taixu/harness/mcp/McpManager.kt": 438,
-        "harness/src/main/java/top/wkbin/taixu/harness/mcp/McpStdioTransport.kt": 429,
+        "harness/src/main/java/top/wkbin/taixu/harness/mcp/McpStdioTransport.kt": 421,
         "harness/src/main/java/top/wkbin/taixu/harness/prompt/SystemPromptBuilder.kt": 682,
         "harness/src/main/java/top/wkbin/taixu/harness/subagent/SubagentLaneContracts.kt": 507,
         "harness/src/main/java/top/wkbin/taixu/harness/workflow/HostActionNodeExecutor.kt": 524,

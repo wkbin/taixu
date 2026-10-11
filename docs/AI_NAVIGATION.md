@@ -11,6 +11,7 @@
 | :--- | :--- | :--- |
 | **系统架构、技术栈与模块拓扑** | [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) | 定位、Android/PRoot/PTY/Harness 技术栈、模块依赖拓扑与跨模块原则 |
 | **数据流转、时序与核心调用链** | [`docs/EXECUTION_TRACES.md`](EXECUTION_TRACES.md) | Agent 循环、存储挂载、PTY 终端、双栏分屏、进程托管与构建链路 |
+| **执行环境替换与资源清理** | [`docs/EXECUTION_ENVIRONMENTS.md`](EXECUTION_ENVIRONMENTS.md) | 文件/命令/MCP/PTY 绑定、父子资源归属、关闭排空与扩展回滚 |
 | **定位特定类、文件与核心组件** | [`docs/FILE_INDEX.md`](FILE_INDEX.md) | Harness、Runtime、Tools、UI 各领域关键文件路径与职责索引 |
 | **架构红线、UX/UI 设计系统与避坑铁律** | [`docs/ARCHITECTURE_RULES.md`](ARCHITECTURE_RULES.md) | Pure Kotlin 隔离、`RuntimeCard`/`RuntimeAlertDialog` 规范、IME 防遮挡 |
 | **构建、测试、打包与调试指令** | [`docs/COMMANDS.md`](COMMANDS.md) | Gradle 单元测试、APK 打包、架构合规检查、ADB 部署与日志调试 |
