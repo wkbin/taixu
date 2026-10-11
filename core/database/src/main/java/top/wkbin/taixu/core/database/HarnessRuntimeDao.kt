@@ -239,6 +239,9 @@ interface HarnessRuntimeDao {
     @Query("DELETE FROM harness_queue_items WHERE sessionId = :sessionId AND laneName = :laneName AND queueType = :queueType")
     suspend fun clearQueue(sessionId: String, laneName: String, queueType: String)
 
+    @Query("UPDATE harness_queue_items SET queueType = :toType WHERE sessionId = :sessionId AND laneName = :laneName AND queueType = :fromType")
+    suspend fun retargetQueue(sessionId: String, laneName: String, fromType: String, toType: String): Int
+
     @Query("DELETE FROM harness_operations WHERE id = :operationId")
     suspend fun deleteOperation(operationId: String)
 

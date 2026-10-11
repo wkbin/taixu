@@ -1056,7 +1056,7 @@ class ChatViewModel(
             harnessLoop.send(effectiveText, imageUrls = imageUrls)
         } else {
             // 运行中投递语义跟随「运行中发送方式」偏好；send() 非挂起函数，故读 stateIn 快照。
-            // STEER 在下一轮 ReAct 开头注入，不打断当前轮正在执行的工具调用（取消运行仍由停止键负责）。
+            // STEER 在当前这批工具调用完成后、下一轮推理开始前注入，不打断正在执行的工具调用。
             when (runningSendModePref.value) {
                 RunningSendMode.STEER -> harnessLoop.steer(effectiveText, imageUrls = imageUrls)
                 RunningSendMode.QUEUE -> harnessLoop.send(effectiveText, imageUrls = imageUrls)

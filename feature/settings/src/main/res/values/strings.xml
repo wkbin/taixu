@@ -119,4 +119,9 @@
     <string name="settings_feature_sentinel_minute_label">分 (0–59)</string>
     <string name="settings_feature_sentinel_confirm">保存</string>
     <string name="settings_feature_sentinel_cancel">取消</string>
+    <string name="agent_running_send_mode_title">运行中发送方式</string>
+    <string name="agent_running_send_mode_queue">排队</string>
+    <string name="agent_running_send_mode_steer">引导</string>
+    <string name="agent_running_send_mode_queue_description">当前轮仍在执行时，新输入排队等它结束后作为下一轮启动。</string>
+    <string name="agent_running_send_mode_steer_description">当前轮仍在执行时，新输入在当前这批工具调用完成后、下一轮推理开始前注入。</string>
 </resources>

@@ -101,4 +101,11 @@ class SettingsSearchRegistryTest {
         val agentTimeout = SettingsSearchRegistry.search("超时 命令")
         assertTrue(agentTimeout.any { it.id == "agent_cmd_timeout" })
     }
+
+    @Test
+    fun testRunningSendModeKeywordsReachApprovalEntry() {
+        for (query in listOf("steer", "引导", "排队", "运行中发送")) {
+            assertTrue(query, SettingsSearchRegistry.search(query).any { it.id == "agent_approval_mode" })
+        }
+    }
 }

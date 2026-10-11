@@ -62,6 +62,9 @@ interface HarnessRuntimeRepository {
     suspend fun listAllQueues(sessionId: String, laneName: String): List<HarnessQueueItemEntity>
     suspend fun cancelQueued(itemId: String)
     suspend fun clearQueue(sessionId: String, laneName: String, queueType: String)
+    /** Moves every item of [fromType] to [toType] without rewriting payload or createdAt. */
+    suspend fun retargetQueue(sessionId: String, laneName: String, fromType: String, toType: String): Int =
+        error("Queue retarget is not supported by this repository")
     suspend fun consumeQueued(itemId: String, entry: HarnessEntryEntity, lane: HarnessLaneEntity)
     suspend fun recordUsage(usage: HarnessUsageEntity)
     suspend fun listUsage(sessionId: String): List<HarnessUsageEntity>
@@ -254,6 +257,8 @@ class RoomHarnessRuntimeRepository(
     override suspend fun cancelQueued(itemId: String) = dao.deleteQueueItem(itemId)
     override suspend fun clearQueue(sessionId: String, laneName: String, queueType: String) =
         dao.clearQueue(sessionId, laneName, queueType)
+    override suspend fun retargetQueue(sessionId: String, laneName: String, fromType: String, toType: String) =
+        dao.retargetQueue(sessionId, laneName, fromType, toType)
     override suspend fun consumeQueued(itemId: String, entry: HarnessEntryEntity, lane: HarnessLaneEntity) {
         val uniqueEntry = ensureUniqueStorageEntry(entry)
         val sanitized = sanitizeForStorage(uniqueEntry)

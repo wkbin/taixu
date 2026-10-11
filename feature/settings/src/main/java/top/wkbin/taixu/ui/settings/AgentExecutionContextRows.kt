@@ -17,11 +17,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import top.wkbin.taixu.core.model.ApprovalMode
 import top.wkbin.taixu.core.model.RunMode
 import top.wkbin.taixu.core.model.RunningSendMode
+import top.wkbin.taixu.feature.settings.R
 import top.wkbin.taixu.ui.components.RuntimeIcon
 import top.wkbin.taixu.ui.components.RuntimeIconName
 import top.wkbin.taixu.ui.settings.LocalizedText as Text
@@ -138,12 +140,15 @@ internal fun RunningSendModeSelectorRow(
                 RuntimeIcon(RuntimeIconName.Tune, Modifier.size(18.dp), MaterialTheme.colorScheme.primary)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("运行中发送方式", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
                 Text(
-                    when (mode) {
-                        RunningSendMode.QUEUE -> "当前轮仍在执行时，新输入排队等它结束后作为下一轮启动。"
-                        RunningSendMode.STEER -> "当前轮仍在执行时，新输入在下一个工具调用边界注入，不等整轮跑完。"
-                    },
+                    stringResource(R.string.agent_running_send_mode_title),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                )
+                Text(
+                    stringResource(when (mode) {
+                        RunningSendMode.QUEUE -> R.string.agent_running_send_mode_queue_description
+                        RunningSendMode.STEER -> R.string.agent_running_send_mode_steer_description
+                    }),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -151,13 +156,13 @@ internal fun RunningSendModeSelectorRow(
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(
-                RunningSendMode.QUEUE to "排队",
-                RunningSendMode.STEER to "引导",
+                RunningSendMode.QUEUE to R.string.agent_running_send_mode_queue,
+                RunningSendMode.STEER to R.string.agent_running_send_mode_steer,
             ).forEach { (value, label) ->
                 FilterChip(
                     selected = mode == value,
                     onClick = { onModeChange(value) },
-                    label = { Text(label) },
+                    label = { Text(stringResource(label)) },
                 )
             }
         }
