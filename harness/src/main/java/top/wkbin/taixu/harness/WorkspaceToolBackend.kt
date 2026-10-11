@@ -26,10 +26,11 @@ class WorkspaceToolBackend(
     private val operationsFor: (String) -> WorkspaceToolOperations,
     private val snapshots: WorkspaceMutationSnapshots = WorkspaceMutationSnapshots(),
     private val imagePayload: (String) -> String = ImagePayloadCompressor::downscaleDataUrl,
+    private val environments: top.wkbin.taixu.harness.environment.SessionExecutionEnvironments? = null,
 ) : ToolBackend<WorkspaceToolRequest, WorkspaceToolOutcome> {
     override suspend fun execute(request: WorkspaceToolRequest): WorkspaceToolOutcome {
         currentCoroutineContext().ensureActive()
-        val operations = operationsFor(request.workspace)
+        val operations = environments?.environment(request.sessionId, request.workspace)?.files ?: operationsFor(request.workspace)
         val path = JsonArgs.requireString(request.args, "path")
         val outcome = when (request.tool) {
             HarnessTool.READ -> read(operations, path, request.args)

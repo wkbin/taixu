@@ -69,6 +69,7 @@ class ToolExecutor(
     private val settingsDataStore: AgentPreferences? = null,
     private val toolCheckpoints: ToolCheckpoints<ToolExecutionRequest, ToolResult> = ToolCheckpoints(),
     workspaceToolBackend: WorkspaceToolBackend? = null,
+    private val environments: top.wkbin.taixu.harness.environment.SessionExecutionEnvironments? = null,
 ) {
     private val mutationSnapshots = WorkspaceMutationSnapshots(checkpointStore, eventBus)
     private val workspaceTools = workspaceToolBackend ?: WorkspaceToolBackend(
@@ -89,13 +90,13 @@ class ToolExecutor(
     )
 
     private val executionBoundary = ToolExecutionBoundary(toolCheckpoints) { request, output ->
-        linuxEnvironmentManager?.refreshIfNeeded()
         val redacted = secretRedactor.redact(
-            output, linuxEnvironmentManager?.values?.value?.values.orEmpty(),
+            output, top.wkbin.taixu.harness.environment.executionOutputSecrets(environments, linuxEnvironmentManager, request.sessionId, request.workspace),
             privacyMode = settingsDataStore?.environmentPrivacyMode?.first() ?: true,
         )
         truncateOutput(redacted, request.call.rawToolName ?: HarnessApiMapper.apiName(request.call.tool),
-            if (request.workspace.isNotBlank()) fileAccess.withBase(request.workspace) else null)
+            if (environments != null) environments.environment(request.sessionId, request.workspace).artifacts
+            else if (request.workspace.isNotBlank()) top.wkbin.taixu.harness.environment.LocalExecutionArtifacts(fileAccess.withBase(request.workspace)) else null)
     }
 
     suspend fun execute(
@@ -106,7 +107,13 @@ class ToolExecutor(
         allowApprovalRequest: Boolean = true,
         progressReporter: (suspend (String) -> Unit)? = null,
         operationId: String? = null,
-    ): ToolResult {
+        resourceOwner: String? = null,
+    ): ToolResult = if (environments != null) environments.activity(sessionId, workspace, resourceOwner) {
+        executeBound(toolCall, sessionId, workspace, bypassApproval, allowApprovalRequest, progressReporter, operationId)
+    } else executeBound(toolCall, sessionId, workspace, bypassApproval, allowApprovalRequest, progressReporter, operationId)
+
+    private suspend fun executeBound(toolCall: ToolCall, sessionId: String, workspace: String, bypassApproval: Boolean,
+        allowApprovalRequest: Boolean, progressReporter: (suspend (String) -> Unit)?, operationId: String?): ToolResult {
         val result = executionBoundary.execute(ToolExecutionRequest(toolCall, sessionId, workspace, operationId)) {
             executeWithPolicy(toolCall, sessionId, workspace, bypassApproval, allowApprovalRequest, progressReporter, operationId)
         }
@@ -240,11 +247,10 @@ class ToolExecutor(
         } else {
             rawOutput
         }
-        linuxEnvironmentManager?.refreshIfNeeded()
         // 先对全量输出脱敏，再截断/落盘：落盘引流文件必须与结果正文同一脱敏口径
         val redactedOutput = secretRedactor.redact(
             value = finalOutput,
-            secretValues = linuxEnvironmentManager?.values?.value?.values.orEmpty(),
+            secretValues = top.wkbin.taixu.harness.environment.executionOutputSecrets(environments, linuxEnvironmentManager, sessionId, workspace),
             privacyMode = settingsDataStore?.let { prefs ->
                 runCatching { prefs.environmentPrivacyMode.first() }.getOrDefault(true)
             } ?: true,
@@ -258,7 +264,8 @@ class ToolExecutor(
             output = truncateOutput(
                 redactedOutput,
                 toolCall.rawToolName ?: HarnessApiMapper.apiName(toolCall.tool),
-                if (workspace.isNotBlank()) fileAccess.withBase(workspace) else null,
+                if (environments != null) environments.environment(sessionId, workspace).artifacts
+                else if (workspace.isNotBlank()) top.wkbin.taixu.harness.environment.LocalExecutionArtifacts(fileAccess.withBase(workspace)) else null,
             ),
             metadata = toolMetadata.toMap(),
             imageDataUrl = imagePayload,
@@ -274,7 +281,7 @@ class ToolExecutor(
     private suspend fun truncateOutput(
         output: String,
         toolName: String?,
-        fileAccess: WorkspaceFileAccess?,
+        fileAccess: top.wkbin.taixu.runtime.environment.ExecutionArtifacts?,
     ): String {
         // 超长单行先折叠（混淆/压缩文件）：否则单行预算退化成保留 60k 字符的整行，
         // 一条 tool result 就可能超出单条消息的传输上限导致连接被重置。落盘仍用原始全量。

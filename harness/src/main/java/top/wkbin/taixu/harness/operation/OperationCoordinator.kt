@@ -38,54 +38,39 @@ class OperationCoordinator(
 
     suspend fun acceptRun(sessionId: String, userMessage: HarnessMessage, laneName: String = SessionTreeStore.MAIN_LANE,
         taskId: String? = null): String = acceptMutex.withLock {
-        val lane = reclaimInterruptedLane(sessionId, laneName)
-        check(lane.currentOperationId == null) { "Lane ${lane.name} is busy" }
-        val now = System.currentTimeMillis()
-        val operationId = UUID.randomUUID().toString()
-        val operation = newOperation(operationId, sessionId, lane, now)
-        val entry = messageEntry(sessionId, lane.leafId, userMessage)
-        val acceptedLane = lane.copy(leafId = entry.id, currentOperationId = operationId, updatedAt = now)
-        if (taskId == null) repository.acceptOperation(entry, acceptedLane, operation)
-        else repository.acceptTaskOperation(taskId, entry, acceptedLane, operation)
-        eventBus.emit(HarnessEvent.OperationStarted(sessionId, now, operationId, laneName))
-        return operationId
+        acceptInput(sessionId, userMessage, laneName, taskId, queueItemId = null)
     }
 
     suspend fun acceptQueuedRun(sessionId: String, queueItemId: String, userMessage: HarnessMessage,
         taskId: String? = null): String = acceptMutex.withLock {
-        val lane = reclaimInterruptedLane(sessionId, SessionTreeStore.MAIN_LANE)
-        check(lane.currentOperationId == null) { "Lane ${lane.name} is busy" }
+        acceptInput(sessionId, userMessage, SessionTreeStore.MAIN_LANE, taskId, queueItemId)
+    }
+
+    /** Caller has gated live jobs/approvals; the remaining operation is an interrupted leftover. */
+    private suspend fun acceptInput(sessionId: String, userMessage: HarnessMessage?, laneName: String,
+        taskId: String?, queueItemId: String?, reuseActive: Boolean = false): String {
+        val initial = repository.ensureLane(sessionId, laneName)
+        val previous = initial.currentOperationId?.let { repository.findOperation(it) }
+        if (reuseActive && previous != null && previous.status != OperationStatus.SUSPENDED.id) return previous.id
+        if (previous != null) settleInterruptedTool(previous.id)
+        val lane = repository.ensureLane(sessionId, laneName)
+        check(lane.currentOperationId == initial.currentOperationId) { "Lane changed during input takeover" }
         val now = System.currentTimeMillis()
         val operationId = UUID.randomUUID().toString()
         val operation = newOperation(operationId, sessionId, lane, now)
-        val entry = messageEntry(sessionId, lane.leafId, userMessage)
-        val acceptedLane = lane.copy(leafId = entry.id, currentOperationId = operationId, updatedAt = now)
-        if (taskId == null) repository.acceptQueuedOperation(queueItemId, entry, acceptedLane, operation)
-        else repository.acceptTaskOperation(taskId, entry, acceptedLane, operation, queueItemId)
-        eventBus.emit(HarnessEvent.OperationStarted(sessionId, now, operationId, SessionTreeStore.MAIN_LANE))
+        val entry = userMessage?.let { messageEntry(sessionId, lane.leafId, it) }
+        val acceptedLane = lane.copy(leafId = entry?.id ?: lane.leafId, currentOperationId = operationId, updatedAt = now, faulted = false)
+        val result = previous?.let { HarnessLaneResultEntity(sessionId, lane.name, it.id, "aborted", null,
+            "上次运行未完成（进程中断或审批等待失效），已被新请求接管", now) }
+        repository.acceptRunTakeover(queueItemId, entry, acceptedLane, operation, lane, result, taskId)
+        if (result != null) eventBus.emit(HarnessEvent.OperationFinished(sessionId, now, result.operationId,
+            lane.name, result.outcome, result.detailsJson))
+        eventBus.emit(HarnessEvent.OperationStarted(sessionId, now, operationId, laneName))
         return operationId
     }
 
     suspend fun beginRun(sessionId: String, laneName: String = SessionTreeStore.MAIN_LANE): String = acceptMutex.withLock {
-        var lane = repository.ensureLane(sessionId, laneName)
-        lane.currentOperationId?.let { existingId ->
-            val existing = repository.findOperation(existingId)
-            if (existing != null && existing.status != OperationStatus.SUSPENDED.id) return existingId
-            if (existing == null) {
-                repository.clearLaneOperation(sessionId, laneName)
-            } else {
-                finish(sessionId, "aborted", details = "挂起的旧运行已被新请求接管", laneName = laneName)
-            }
-            lane = repository.ensureLane(sessionId, laneName)
-        }
-        val now = System.currentTimeMillis()
-        val operationId = UUID.randomUUID().toString()
-        repository.beginOperation(
-            lane.copy(currentOperationId = operationId, updatedAt = now),
-            newOperation(operationId, sessionId, lane, now),
-        )
-        eventBus.emit(HarnessEvent.OperationStarted(sessionId, now, operationId, laneName))
-        return operationId
+        acceptInput(sessionId, null, laneName, taskId = null, queueItemId = null, reuseActive = true)
     }
 
     suspend fun providerIntent(operationId: String, effectId: String, round: Int, attempt: Int, maxAttempts: Int) {
@@ -125,7 +110,10 @@ class OperationCoordinator(
         }
     }
 
-    suspend fun toolIntent(operationId: String, message: HarnessMessage, payloadJson: String, replay: ReplayPolicy, round: Int) {
+    suspend fun toolIntent(
+        operationId: String, message: HarnessMessage, payloadJson: String, replay: ReplayPolicy, round: Int,
+        persistMessage: Boolean = true,
+    ) {
         val snapshot = OperationSnapshot(
             phase = OperationPhase.TOOL_INTENT.id,
             round = round,
@@ -134,7 +122,8 @@ class OperationCoordinator(
             effectPayloadJson = payloadJson,
             replayPolicy = replay.id,
         )
-        settle(operationId, message, null, snapshot, replay)
+        // Approval replay reuses the frozen call; persist its new execution intent without duplicating the entry.
+        settle(operationId, message.takeIf { persistMessage }, null, snapshot, replay)
         emitFor(operationId) { sessionId, timestamp, _ ->
             val toolCall = message as? ToolCall
             HarnessEvent.ToolCallStarted(
@@ -206,35 +195,11 @@ class OperationCoordinator(
 
     suspend fun operationExists(operationId: String): Boolean = repository.findOperation(operationId) != null
 
-    /**
-     * A lane whose current operation is no longer attached to a live in-process run is a
-     * leftover: the process died mid-run (recovery suspended it), or its approval wait was
-     * abandoned. Finish it as aborted so the next send can start a new operation instead of
-     * failing with "lane busy" and silently dropping the message.
-     *
-     * In normal operation a waiting-approval lane is never reached here: the run state gate
-     * routes sends to the queue while an approval is pending.
-     */
-    private suspend fun reclaimInterruptedLane(sessionId: String, laneName: String): HarnessLaneEntity {
-        val lane = repository.ensureLane(sessionId, laneName)
-        val staleOperationId = lane.currentOperationId ?: return lane
-        val staleOperation = repository.findOperation(staleOperationId)
-        return when {
-            // Dangling pointer without a live operation row: just clear it.
-            staleOperation == null -> {
-                repository.clearLaneOperation(sessionId, laneName)
-                lane.copy(currentOperationId = null)
-            }
-            else -> {
-                finish(
-                    sessionId,
-                    "aborted",
-                    details = "上次运行未完成（进程中断或审批等待失效），已被新请求接管",
-                    laneName = laneName,
-                )
-                repository.ensureLane(sessionId, laneName)
-            }
-        }
+    /** Must complete before a takeover/finish can clear the lane's recovery pointer. */
+    internal suspend fun settleInterruptedTool(operationId: String): String? {
+        val repair = interruptedToolSettlement(repository, json, requireOperation(operationId)) ?: return null
+        toolSettled(operationId, repair.result, repair.round, toolName = repair.toolName)
+        return repair.result.output
     }
 
     /** Builds an append-only ledger row from provider-reported usage. */
@@ -272,7 +237,8 @@ class OperationCoordinator(
         val entry = message?.let { messageEntry(current.sessionId, lane.leafId, it) }
         val now = System.currentTimeMillis()
         val next = current.copy(
-            status = OperationStatus.RUNNING.id,
+            status = if (current.status == OperationStatus.SUSPENDED.id && snapshot.phase == OperationPhase.TOOL_SETTLED.id)
+                current.status else OperationStatus.RUNNING.id,
             phase = snapshot.phase,
             updatedAt = now,
             stateJson = json.encodeToString(OperationSnapshot.serializer(), snapshot),

@@ -289,6 +289,15 @@ class OperationCoordinatorTest {
             acceptOperation(entry, lane, operation)
         }
 
+        override suspend fun acceptRunTakeover(queueItemId: String?, entry: HarnessEntryEntity?, lane: HarnessLaneEntity,
+            operation: HarnessOperationEntity, previousLane: HarnessLaneEntity,
+            previousResult: HarnessLaneResultEntity?, taskId: String?) {
+            if (previousResult != null) finishOperation(previousResult, previousLane.copy(currentOperationId = null))
+            if (entry == null) beginOperation(lane, operation)
+            else if (queueItemId != null) acceptQueuedOperation(queueItemId, entry, lane, operation)
+            else acceptOperation(entry, lane, operation)
+        }
+
         override suspend fun beginOperation(lane: HarnessLaneEntity, operation: HarnessOperationEntity) {
             operations[operation.id] = operation
             upsertLaneForTest(lane)
@@ -306,7 +315,7 @@ class OperationCoordinatorTest {
         }
 
         override suspend fun finishOperation(result: HarnessLaneResultEntity, lane: HarnessLaneEntity) {
-            queueItems.removeAll { it.operationId == result.operationId }
+            queueItems.removeAll { it.operationId == result.operationId && it.queueType != "next_run" }
             operations.remove(result.operationId)
             results[result.sessionId to result.laneName] = result
             upsertLaneForTest(lane)

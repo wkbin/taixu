@@ -49,6 +49,12 @@ class LinuxEnvironmentManager(
         }
     }
 
+    /** Refresh and snapshot under one lock so another world's refresh cannot replace these values. */
+    suspend fun redactionSecrets(distroId: String): Collection<String> = mutex.withLock {
+        if (loadedDistroId != distroId) refreshLocked(distroId).getOrThrow()
+        _values.value.values.toList()
+    }
+
     suspend fun add(
         key: String,
         value: String,
@@ -118,6 +124,7 @@ class LinuxEnvironmentManager(
 
     private suspend fun refreshLocked(distroId: String): Result<Unit> = runCatching {
         if (loadedDistroId != distroId) {
+            loadedDistroId = null
             _variables.value = emptyList()
             _values.value = emptyMap()
             _effectiveEnvironment.value = emptyList()

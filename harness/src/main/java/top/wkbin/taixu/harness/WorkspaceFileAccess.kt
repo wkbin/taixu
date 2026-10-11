@@ -16,13 +16,6 @@ data class WorkspaceEntry(
     val sizeBytes: Long,
 )
 
-/** edit 工具的详细结果：命中策略与文件级 Unified Diff（供前端对比视图渲染）。 */
-data class WorkspaceEditOutcome(
-    val strategy: String,
-    val replacements: Int,
-    val diff: String?,
-)
-
 /**
  * Harness 文件工具的受控访问层。
  *
@@ -150,8 +143,11 @@ class WorkspaceFileAccess(
             val temporary = File(file.parentFile, ".${file.name}.tmp-${System.nanoTime()}")
             try {
                 temporary.outputStream().buffered().use { it.write(bytes) }
-                if (!temporary.renameTo(file)) {
-                    temporary.copyTo(file, overwrite = true)
+                try {
+                    Files.move(temporary.toPath(), file.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                    Files.move(temporary.toPath(), file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                 }
             } finally {
                 temporary.delete()
@@ -240,7 +236,7 @@ class WorkspaceFileAccess(
     }
 
     /** 在工作区边界内删除文件（路径逃逸或删除失败返回 false）；文件不存在视为成功。 */
-    suspend fun delete(path: String): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun delete(path: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val file = resolve(path) ?: return@withContext false
             if (!file.exists()) return@withContext true

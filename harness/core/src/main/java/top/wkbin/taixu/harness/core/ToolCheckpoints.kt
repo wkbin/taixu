@@ -21,19 +21,35 @@ interface ToolCheckpoint<Request, Result> {
 
 /** Awaited control checkpoints, independent of lossy observation events and persistence. */
 class ToolCheckpoints<Request, Result>(checkpoints: List<ToolCheckpoint<Request, Result>> = emptyList()) {
-    private val registrations = checkpoints.map { it.id to it }
+    private class Entry<Q, R>(val id: String, val checkpoint: ToolCheckpoint<Q, R>, val applies: (Q) -> Boolean)
+    private val lock = Any()
+    private val registrations = mutableListOf<Entry<Request, Result>>()
 
     init {
-        require(registrations.size <= 32) { "Too many tool checkpoints" }
-        require(registrations.map { it.first }.distinct().size == registrations.size) { "Duplicate tool checkpoint id" }
-        require(registrations.all { it.first.matches(Regex("[A-Za-z0-9._-]{1,64}")) }) { "Invalid tool checkpoint id" }
+        checkpoints.forEach { register(it) }
     }
+
+    /** Unload removes this exact registration, including after an ID has been reused. */
+    fun register(checkpoint: ToolCheckpoint<Request, Result>, appliesTo: (Request) -> Boolean = { true }): AutoCloseable {
+        val entry = Entry(checkpoint.id, checkpoint, appliesTo)
+        synchronized(lock) {
+            require(entry.id.matches(Regex("[A-Za-z0-9._-]{1,64}"))) { "Invalid tool checkpoint id" }
+            require(registrations.size < 32) { "Too many tool checkpoints" }
+            require(registrations.none { it.id == entry.id }) { "Duplicate tool checkpoint id" }
+            registrations.add(entry)
+        }
+        return AutoCloseable { synchronized(lock) { registrations.remove(entry) }; Unit }
+    }
+
+    private fun snapshot() = synchronized(lock) { registrations.toList() }
 
     suspend fun before(request: Request): ToolCheckpointBlock? {
         currentCoroutineContext().ensureActive()
-        for ((id, checkpoint) in registrations) {
+        for (entry in snapshot()) {
+            val id = entry.id
             val decision = try {
-                checkpoint.before(request)
+                if (!entry.applies(request)) continue
+                entry.checkpoint.before(request)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (failure: Throwable) {
@@ -52,9 +68,11 @@ class ToolCheckpoints<Request, Result>(checkpoints: List<ToolCheckpoint<Request,
     suspend fun after(request: Request, result: Result): List<ToolCheckpointNote> {
         currentCoroutineContext().ensureActive()
         val notes = mutableListOf<ToolCheckpointNote>()
-        for ((id, checkpoint) in registrations) {
+        for (entry in snapshot()) {
+            val id = entry.id
             val text = try {
-                checkpoint.after(request, result)
+                if (!entry.applies(request)) continue
+                entry.checkpoint.after(request, result)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (failure: Throwable) {

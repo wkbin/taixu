@@ -8,6 +8,9 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import top.wkbin.taixu.runtime.environment.ExecutionArtifacts
+import top.wkbin.taixu.runtime.environment.ExecutionArtifact
+import top.wkbin.taixu.harness.environment.LocalExecutionArtifacts
 
 /**
  * 超长工具输出的落盘引流（对齐 opencode tool/truncate.ts 的 spill-to-file）：
@@ -28,8 +31,8 @@ object ToolOutputSpillStore {
     private val TIMESTAMP_FORMAT = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
     private val LOCKS = mutableMapOf<String, Mutex>()
 
-    private fun lockFor(fileAccess: WorkspaceFileAccess): Mutex = synchronized(LOCKS) {
-        LOCKS.getOrPut(fileAccess.workspaceLockKey()) { Mutex() }
+    private fun lockFor(fileAccess: ExecutionArtifacts): Mutex = synchronized(LOCKS) {
+        LOCKS.getOrPut(fileAccess.storageKey) { Mutex() }
     }
 
     /** 生成落盘文件名 `tool-<时间戳>-<工具名>-<rand>.txt`；工具名白名单化防路径注入。 */
@@ -62,20 +65,25 @@ object ToolOutputSpillStore {
      * 写入全量输出并顺带 GC，返回工作区相对路径；失败返回 null（调用方退回纯截断文案）。
      * [content] 必须已脱敏：调用方先过 SecretRedactor 再落盘，落盘文件与结果正文同一脱敏口径。
      */
-    suspend fun spill(fileAccess: WorkspaceFileAccess, toolName: String?, content: String): String? {
+    suspend fun spill(fileAccess: WorkspaceFileAccess, toolName: String?, content: String): String? =
+        spill(LocalExecutionArtifacts(fileAccess), toolName, content)
+
+    suspend fun spill(fileAccess: ExecutionArtifacts, toolName: String?, content: String): String? {
         if (content.isEmpty()) return null
         return try {
             lockFor(fileAccess).withLock {
                 cleanupLocked(fileAccess)
                 val bytes = content.toByteArray(Charsets.UTF_8).size.toLong()
-                if (bytes > MAX_WORKSPACE_BYTES || bytes > WorkspaceFileAccess.MAX_HARNESS_ARTIFACT_BYTES) {
+                if (bytes > MAX_WORKSPACE_BYTES || bytes > minOf(fileAccess.maxArtifactBytes, ExecutionArtifacts.MAX_ARTIFACT_BYTES)) {
                     return@withLock null
                 }
-                evictForBudget(fileAccess, bytes)
-                val path = "$DIR/${fileName(toolName, System.currentTimeMillis(), UUID.randomUUID().toString())}"
-                if (!fileAccess.writeHarnessArtifact(path, content).isSuccess) return@withLock null
-                ensureGitExclude(fileAccess)
-                path
+                if (!evictForBudget(fileAccess, bytes)) return@withLock null
+                val name = fileName(toolName, System.currentTimeMillis(), UUID.randomUUID().toString())
+                if (!fileAccess.write(name, content).isSuccess) return@withLock null
+                try { fileAccess.excludeFromSourceControl() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* The output remains readable if exclusion fails. */ }
+                "$DIR/$name"
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -84,52 +92,40 @@ object ToolOutputSpillStore {
         }
     }
 
-    /** 把 Harness 产物目录加入仓库本地 exclude；不修改用户受版本控制的 .gitignore。 */
-    private suspend fun ensureGitExclude(fileAccess: WorkspaceFileAccess) {
-        val exclude = ".git/info/exclude"
-        val current = fileAccess.previewOrNull(exclude).orEmpty()
-        val marker = "/$DIR/"
-        if (current.lineSequence().any { it.trim() == marker }) return
-        val updated = buildString {
-            append(current.trimEnd())
-            if (isNotEmpty()) append('\n')
-            append(marker)
-            append('\n')
-        }
-        fileAccess.writeHarnessArtifact(exclude, updated)
-    }
-
     /** 清理超过保留期的旧落盘文件；列目录/删除失败静默跳过（GC 不阻塞主流程）。 */
-    suspend fun cleanup(fileAccess: WorkspaceFileAccess, now: Long = System.currentTimeMillis()) {
+    suspend fun cleanup(fileAccess: WorkspaceFileAccess, now: Long = System.currentTimeMillis()) =
+        cleanup(LocalExecutionArtifacts(fileAccess), now)
+
+    suspend fun cleanup(fileAccess: ExecutionArtifacts, now: Long = System.currentTimeMillis()) {
         lockFor(fileAccess).withLock { cleanupLocked(fileAccess, now) }
     }
 
-    private suspend fun cleanupLocked(fileAccess: WorkspaceFileAccess, now: Long = System.currentTimeMillis()) {
-        runCatching {
-            fileAccess.list(DIR).getOrNull().orEmpty()
-                .filter { !it.isDirectory && (isExpired(it.name, now) || isTemporaryArtifact(it.name)) }
-                .forEach { fileAccess.delete("$DIR/${it.name}") }
-        }
+    private suspend fun cleanupLocked(fileAccess: ExecutionArtifacts, now: Long = System.currentTimeMillis()) {
+        try {
+            fileAccess.list().getOrNull().orEmpty()
+                .filter { isExpired(it.name, now) || isTemporaryArtifact(it.name) }
+                .forEach { fileAccess.delete(it.name) }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { /* Best-effort expiry; budget admission below still fails closed. */ }
     }
 
-    private suspend fun evictForBudget(fileAccess: WorkspaceFileAccess, incomingBytes: Long) {
-        val entries = fileAccess.list(DIR).getOrNull().orEmpty()
-            .filter { !it.isDirectory && it.name.startsWith("tool-") && it.name.endsWith(".txt") }
+    private suspend fun evictForBudget(fileAccess: ExecutionArtifacts, incomingBytes: Long): Boolean {
+        val entries = (fileAccess.list().getOrNull() ?: return false)
+            .filter { it.name.startsWith("tool-") && it.name.endsWith(".txt") }
             .sortedBy(::embeddedTimestamp)
-            .toMutableList()
         var total = entries.sumOf { it.sizeBytes }
-        while (entries.isNotEmpty() &&
-            (entries.size >= MAX_WORKSPACE_FILES || total > MAX_WORKSPACE_BYTES - incomingBytes)
-        ) {
-            val oldest = entries.removeAt(0)
-            if (fileAccess.delete("$DIR/${oldest.name}")) total -= oldest.sizeBytes
+        var count = entries.size
+        for (oldest in entries) {
+            if (count < MAX_WORKSPACE_FILES && total <= MAX_WORKSPACE_BYTES - incomingBytes) return true
+            if (fileAccess.delete(oldest.name)) { total -= oldest.sizeBytes; count-- }
         }
+        return count < MAX_WORKSPACE_FILES && total <= MAX_WORKSPACE_BYTES - incomingBytes
     }
 
     private fun isTemporaryArtifact(name: String): Boolean =
         name.startsWith(".") && name.contains(".tmp-")
 
-    private fun embeddedTimestamp(entry: WorkspaceEntry): Long {
+    private fun embeddedTimestamp(entry: ExecutionArtifact): Long {
         val body = entry.name.removePrefix("tool-")
         val parts = body.split('-')
         if (parts.size < 2) return Long.MIN_VALUE

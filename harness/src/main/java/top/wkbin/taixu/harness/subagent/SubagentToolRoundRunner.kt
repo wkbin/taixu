@@ -10,8 +10,11 @@ import top.wkbin.taixu.harness.ModelConfig
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolCallIdNormalizer
 import top.wkbin.taixu.harness.ToolResult
+import top.wkbin.taixu.harness.ToolRoundDispatcher
+import top.wkbin.taixu.harness.ToolCallContract
 import top.wkbin.taixu.harness.core.DurableToolRunner
 import top.wkbin.taixu.harness.effects.ToolReplayPolicy
+import top.wkbin.taixu.harness.effects.toolExecutionFailureResult
 import top.wkbin.taixu.harness.operation.OperationCoordinator
 import top.wkbin.taixu.harness.validation.ToolCallLoopDetector
 import top.wkbin.taixu.harness.validation.ToolSchemaValidator
@@ -20,6 +23,7 @@ import top.wkbin.taixu.harness.validation.ToolSchemaValidator
 internal class SubagentToolRoundRunner(
     private val operations: OperationCoordinator,
     private val json: Json,
+    private val dispatcher: ToolRoundDispatcher,
     private val executeTool: suspend (ToolCall, String, String, String) -> ToolResult,
 ) {
     var toolCallCount = 0
@@ -44,9 +48,13 @@ internal class SubagentToolRoundRunner(
             val callId = ToolCallIdNormalizer.normalize(spec.id)
             val rawName = spec.name.trim()
             val tool = HarnessApiMapper.toolByName(rawName)
+            if (!ToolCallContract.isKnownName(rawName)) {
+                reject(operationId, round, ToolCall(callId, now(), tool, JsonObject(emptyMap()), reasoning, rawName),
+                    spec.argumentsJson, ToolCallContract.unknownGuidance(rawName, model))
+                continue
+            }
             val args = try {
-                json.parseToJsonElement(spec.argumentsJson) as? JsonObject
-                    ?: throw IllegalArgumentException("参数不是 JSON 对象")
+                ToolCallContract.parseArguments(json, spec.argumentsJson)
             } catch (failure: IllegalArgumentException) {
                 reject(
                     operationId, round,
@@ -67,8 +75,13 @@ internal class SubagentToolRoundRunner(
                 reject(operationId, round, call, spec.argumentsJson, "${loopVerdict.reason}\n\n${loopVerdict.guidance}")
                 continue
             }
-            val writeRejection = writePaths?.let { subagentWriteScopeRejection(tool, args, it) }
-            DurableToolRunner.run(
+            // Inspect exactly the argument view used by ToolExecutor, but keep the original call
+            // unchanged: normalizing twice can unwrap more levels or rewrite legitimate MCP keys.
+            val executionArgs = ToolSchemaValidator.normalizeArgs(
+                args, applyAliases = tool != HarnessTool.MCP, isMcpTool = tool == HarnessTool.MCP,
+            )
+            val writeRejection = writePaths?.let { subagentWriteScopeRejection(tool, executionArgs, it) }
+            dispatcher.withToolLock(tool, workspace) { DurableToolRunner.run(
                 commitIntent = {
                     operations.toolIntent(operationId, call, spec.argumentsJson, ToolReplayPolicy.forTool(tool, rawName), round)
                     loopDetector.recordIntent(rawName, args)
@@ -80,11 +93,12 @@ internal class SubagentToolRoundRunner(
                         else -> executeTool(call, sessionId, workspace, operationId)
                     }
                 },
-                executionFailure = { throwable -> failure(call, "工具执行异常：${throwable.message?.take(200) ?: throwable::class.simpleName}") },
+                executionFailure = { throwable -> toolExecutionFailureResult(call,
+                    "工具执行异常：${throwable.message?.take(200) ?: throwable::class.simpleName}") },
                 commitResult = { outcome ->
                     operations.toolSettled(operationId, outcome, round, toolName = rawName)
                     loopDetector.recordSettled(rawName, args, outcome.success, output = outcome.output)
-                    if (writeRejection != null) blockedWrites += subagentWriteTargetLabel(rawName, args)
+                    if (writeRejection != null) blockedWrites += subagentWriteTargetLabel(rawName, executionArgs)
                     if (outcome.approvalDeferred) {
                         pendingApprovals += SubagentApprovalHandoff(
                             toolName = rawName,
@@ -92,12 +106,12 @@ internal class SubagentToolRoundRunner(
                             reason = outcome.output.lineSequence().firstOrNull()?.take(200).orEmpty(),
                         )
                     } else if (writeRejection == null && tool in LANE_WRITE_TOOLS) {
-                        val target = subagentWriteTargetLabel(rawName, args)
+                        val target = subagentWriteTargetLabel(rawName, executionArgs)
                         if (outcome.success) failedWrites.remove(target)
                         else failedWrites[target] = outcome.output.lineSequence().firstOrNull()?.take(200).orEmpty()
                     }
                 },
-            )
+            ) }
         }
     }
 

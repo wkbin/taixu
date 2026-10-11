@@ -12,6 +12,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ToolCheckpointsTest {
+    @Test fun `stale unregister handle cannot remove new registration with reused id`() = runTest {
+        val checkpoints = ToolCheckpoints<String, Boolean>()
+        val old = checkpoints.register(checkpoint("guard", before = { ToolGateDecision.Block("old") }))
+        old.close()
+        val replacement = checkpoints.register(checkpoint("guard", before = { ToolGateDecision.Block("new") }))
+        old.close()
+        assertEquals("new", checkpoints.before("call")!!.reason)
+        replacement.close()
+        assertNull(checkpoints.before("call"))
+    }
     private fun checkpoint(
         name: String,
         before: suspend (String) -> ToolGateDecision = { ToolGateDecision.Allow },

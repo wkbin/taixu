@@ -53,6 +53,12 @@ interface HarnessRuntimeRepository {
         operation: HarnessOperationEntity, queueItemId: String? = null) {
         error("Atomic task admission is not supported by this repository")
     }
+    /** Ends a leftover run and starts its successor, with optional input, in one transaction. */
+    suspend fun acceptRunTakeover(queueItemId: String?, entry: HarnessEntryEntity?, lane: HarnessLaneEntity,
+        operation: HarnessOperationEntity, previousLane: HarnessLaneEntity,
+        previousResult: HarnessLaneResultEntity?, taskId: String?) {
+        error("Atomic run takeover is not supported by this repository")
+    }
     suspend fun beginOperation(lane: HarnessLaneEntity, operation: HarnessOperationEntity)
     suspend fun saveOperation(operation: HarnessOperationEntity)
     suspend fun settleEffect(entry: HarnessEntryEntity?, usage: HarnessUsageEntity?, operation: HarnessOperationEntity, lane: HarnessLaneEntity)
@@ -233,6 +239,14 @@ class RoomHarnessRuntimeRepository(
         dao.acceptTaskOperation(taskId, sanitizeForStorage(unique), lane.copy(leafId = unique.id), operation, queueItemId)
     }
     override suspend fun saveOperation(operation: HarnessOperationEntity) = dao.upsertOperation(operation)
+    override suspend fun acceptRunTakeover(queueItemId: String?, entry: HarnessEntryEntity?, lane: HarnessLaneEntity,
+        operation: HarnessOperationEntity, previousLane: HarnessLaneEntity,
+        previousResult: HarnessLaneResultEntity?, taskId: String?) {
+        require(entry == null || lane.leafId == entry.id) { "Admission lane must point to the input entry" }
+        val unique = entry?.let { ensureUniqueStorageEntry(it) }
+        dao.acceptRunTakeover(queueItemId, unique?.let(::sanitizeForStorage), lane.copy(leafId = unique?.id ?: lane.leafId),
+            operation, previousLane, previousResult, taskId)
+    }
     override suspend fun settleEffect(entry: HarnessEntryEntity?, usage: HarnessUsageEntity?, operation: HarnessOperationEntity, lane: HarnessLaneEntity) {
         val uniqueEntry = entry?.let { ensureUniqueStorageEntry(it) }
         val sanitized = uniqueEntry?.let(::sanitizeForStorage)

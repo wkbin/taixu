@@ -1,17 +1,20 @@
 package top.wkbin.taixu.harness
 
-import java.io.File
 import java.util.UUID
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import top.wkbin.taixu.core.database.BuildScriptEntity
 import top.wkbin.taixu.core.database.BuildScriptRepository
+import top.wkbin.taixu.harness.environment.LocalExecutionBuildBindings
+import top.wkbin.taixu.harness.environment.SessionExecutionEnvironments
+import kotlinx.coroutines.CancellationException
 
 /** Controlled Harness API for reusable workshop scripts. */
 class BuildScriptToolExecutor(
     private val repository: BuildScriptRepository,
+    private val environments: SessionExecutionEnvironments? = null,
 ) {
-    suspend fun execute(args: JsonObject, workspace: String): Pair<Boolean, String> {
+    suspend fun execute(args: JsonObject, workspace: String, sessionId: String = ""): Pair<Boolean, String> {
         val action = args.string("action").trim().lowercase()
         return when (action) {
             "list" -> {
@@ -61,22 +64,29 @@ class BuildScriptToolExecutor(
                 if (project.isBlank()) return false to "project 不能为空，且当前会话没有工作区"
                 val id = args.string("id")
                 if (id.isBlank()) return false to "缺少参数：id"
+                if (repository.findScript(id) == null) return false to "构建脚本不存在：$id"
+                val bindings = bindingsFor(sessionId, workspace) ?: return false to "当前执行环境尚未提供项目构建脚本挂载适配器"
                 runCatching {
-                    repository.bind(project, id)
+                    bindings.bind(project, id)
                 }.fold(
                     onSuccess = { true to "已将项目 $project 挂载到构建脚本 $id" },
-                    onFailure = { false to (it.message ?: "挂载失败") },
+                    onFailure = { if (it is CancellationException) throw it; false to (it.message ?: "挂载失败") },
                 )
             }
             "unbind" -> {
                 val project = resolveProject(args, workspace)
                 if (project.isBlank()) return false to "project 不能为空，且当前会话没有工作区"
-                repository.unbind(project)
+                val bindings = bindingsFor(sessionId, workspace) ?: return false to "当前执行环境尚未提供项目构建脚本挂载适配器"
+                bindings.unbind(project)
                 true to "项目 $project 已恢复标准构建流程"
             }
             else -> false to "未知 action：$action"
         }
     }
+
+    private suspend fun bindingsFor(session: String, workspace: String) =
+        if (environments != null) environments.environment(session, workspace).buildBindings
+        else LocalExecutionBuildBindings(repository)
 
     private fun resolveProject(args: JsonObject, workspace: String): String =
         args.string("project").ifBlank { workspace.trim().trimEnd('/').substringAfterLast('/') }

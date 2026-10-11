@@ -49,8 +49,9 @@ internal class ToolRouting(
         require(missing.isEmpty()) { "缺少工具路由：$missing" }
     }
 
-    suspend fun dispatch(ctx: ToolInvocationContext): Pair<Boolean, String> =
-        routes.getValue(ctx.tool).invoke(ctx)
+    suspend fun dispatch(ctx: ToolInvocationContext): Pair<Boolean, String> {
+        return routes.getValue(ctx.tool).invoke(ctx)
+    }
 
     private fun buildRoutes(): Map<HarnessTool, ToolRouteFn> {
         val workspace: ToolRouteFn = { ctx ->
@@ -71,10 +72,10 @@ internal class ToolRouting(
             HarnessTool.WRITE to workspace,
             HarnessTool.EDIT to workspace,
             HarnessTool.BASE to { ctx ->
-                linuxCommandToolBackend.execute(LinuxCommandRequest(HarnessTool.BASE, ctx.args, ctx.workspace))
+                linuxCommandToolBackend.execute(LinuxCommandRequest(HarnessTool.BASE, ctx.args, ctx.workspace, ctx.sessionId))
             },
             HarnessTool.PROCESS to { ctx ->
-                linuxCommandToolBackend.execute(LinuxCommandRequest(HarnessTool.PROCESS, ctx.args, ctx.workspace))
+                linuxCommandToolBackend.execute(LinuxCommandRequest(HarnessTool.PROCESS, ctx.args, ctx.workspace, ctx.sessionId))
             },
             HarnessTool.HOST to { ctx ->
                 hostToolBackend.execute(HostToolRequest(ctx.args, ctx.operationId, ctx.sessionId, ctx.metadata))

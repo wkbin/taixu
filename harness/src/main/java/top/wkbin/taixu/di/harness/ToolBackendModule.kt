@@ -20,6 +20,10 @@ import top.wkbin.taixu.harness.core.ToolCheckpoints
 import top.wkbin.taixu.harness.directory.CapabilityToolGateway
 
 internal val toolBackendModule = module {
+    single<top.wkbin.taixu.runtime.environment.ExecutionEnvironmentFactory> {
+        top.wkbin.taixu.harness.environment.LocalExecutionEnvironmentFactory(get(), get(), get(), get(), get(), get())
+    }
+    single { top.wkbin.taixu.harness.environment.SessionExecutionEnvironments(get()) }
     single { ToolCheckpoints<ToolExecutionRequest, ToolResult>() }
     single { WorkspaceMutationSnapshots(store = get(), events = get()) }
     single {
@@ -27,6 +31,7 @@ internal val toolBackendModule = module {
         WorkspaceToolBackend(
             operationsFor = { workspace -> if (workspace.isNotBlank()) files.withBase(workspace) else files },
             snapshots = get(),
+            environments = get(),
         )
     }
     // 领域能力后端：各域独立持有自己的运行时依赖，ToolExecutor 只做管道编排与路由。
@@ -53,6 +58,7 @@ internal val toolBackendModule = module {
             pathResolver = get(),
             settingsDataStore = get(),
             workflowSignals = get(),
+            environments = get(),
         )
     }
     single {
@@ -60,6 +66,7 @@ internal val toolBackendModule = module {
             fileDownloader = get(),
             fileAccess = get(),
             mutationSnapshots = get(),
+            environments = get(),
         )
     }
     single {
@@ -124,6 +131,7 @@ internal val toolBackendModule = module {
             settingsDataStore = get(),
             toolCheckpoints = get(),
             workspaceToolBackend = get(),
+            environments = get(),
         )
     }
 

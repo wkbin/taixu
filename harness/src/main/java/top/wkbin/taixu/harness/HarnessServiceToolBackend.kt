@@ -43,7 +43,7 @@ class HarnessServiceToolBackend(
                 subagentOrchestrator?.executeSubagents(request.args, request.sessionId)
                     ?: (false to "未初始化子智能体编排器")
             }
-            HarnessTool.BUILD_SCRIPT -> buildScriptToolExecutor?.execute(request.args, request.workspace)
+            HarnessTool.BUILD_SCRIPT -> buildScriptToolExecutor?.execute(request.args, request.workspace, request.sessionId)
                 ?: (false to "未初始化构建脚本管理器")
             HarnessTool.RENDER_SURFACE -> A2uiSurfaceBus.publishFromTool(request.args, request.sessionId)
             else -> throw IllegalArgumentException("Unsupported tool: ${request.tool}")

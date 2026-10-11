@@ -3,9 +3,10 @@ package top.wkbin.taixu.harness.subagent
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.HarnessTool
-import top.wkbin.taixu.harness.JsonArgs
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.harness.normalizeWritePath
@@ -139,13 +140,13 @@ internal fun extractSubagentReceipts(transcript: List<HarnessMessage>): Subagent
     val writtenPaths = mutableListOf<String>()
     for ((id, call) in calls) {
         if (call.id !in successByCallId) continue
-        val command = call.args.stringArg("command")
-        if (call.tool in setOf(HarnessTool.BASE, HarnessTool.PROCESS) && !command.isNullOrBlank()) {
-            commands += normalizeCommand(command)
+        // MCP 参数由远端 schema 定义，只读取能提供对应凭据的内置工具。
+        if (call.tool in setOf(HarnessTool.BASE, HarnessTool.PROCESS)) {
+            call.args.stringArg("command")?.let { commands += normalizeCommand(it) }
         }
-        val path = call.args.stringArg("path") ?: call.args.stringArg("destination")
-        if (call.tool in LANE_WRITE_TOOLS && !path.isNullOrBlank()) {
-            writtenPaths += normalizeWritePath(path)
+        if (call.tool in LANE_WRITE_TOOLS) {
+            val path = call.args.stringArg("path") ?: call.args.stringArg("destination")
+            path?.let { writtenPaths += normalizeWritePath(it) }
         }
     }
     return SubagentHostReceipts(
@@ -248,4 +249,6 @@ internal fun statusLabel(status: String): String = when (status) {
 private fun normalizeCommand(command: String): String =
     command.replace(Regex("\\s+"), " ").trim().removePrefix("./").trim()
 
-private fun JsonObject.stringArg(key: String): String? = JsonArgs.optionalString(this, key)
+// 凭据提取是历史记录的容错读取；结构化值和 JSON null 均不构成凭据。
+private fun JsonObject.stringArg(key: String): String? =
+    (this[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }

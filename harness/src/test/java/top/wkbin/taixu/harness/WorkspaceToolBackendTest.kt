@@ -26,6 +26,7 @@ class WorkspaceToolBackendTest {
         var large = false
         var beforeWrite: suspend () -> Unit = {}
         val calls = mutableListOf<String>()
+        override suspend fun delete(path: String): Boolean { content = null; return true }
         override suspend fun read(path: String, offset: Int?, limit: Int?): AppResult<String> {
             calls += "read:$path:$offset:$limit"
             return AppResult.Success(content.orEmpty())

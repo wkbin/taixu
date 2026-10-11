@@ -4,7 +4,13 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -27,8 +33,11 @@ import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.ModelConfig
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
+import top.wkbin.taixu.harness.ToolRoundDispatcher
 import top.wkbin.taixu.harness.UserMessage
+import top.wkbin.taixu.harness.validation.ToolSchemaValidator
 import top.wkbin.taixu.harness.events.HarnessEventBus
+import top.wkbin.taixu.harness.effects.ToolRecoveryNotice
 import top.wkbin.taixu.harness.operation.OperationCoordinator
 import top.wkbin.taixu.harness.operation.OperationPhase
 
@@ -53,17 +62,18 @@ class SubagentToolRoundRunnerTest {
 
     private fun runner(
         operations: OperationCoordinator,
+        dispatcher: ToolRoundDispatcher = ToolRoundDispatcher(),
         execute: suspend (ToolCall) -> ToolResult,
-    ) = SubagentToolRoundRunner(operations, Json) { call, _, _, _ -> execute(call) }
+    ) = SubagentToolRoundRunner(operations, Json, dispatcher) { call, _, _, _ -> execute(call) }
 
     private suspend fun SubagentToolRoundRunner.round(operationId: String, writePaths: List<String>? = null) {
         execute(listOf(ApiToolCallSpec("call", "write", """{"path":"a.txt","content":"hello"}""")),
             "s", "/workspace", model, operationId, 0, null, writePaths)
     }
 
-    private suspend fun operations(repo: HarnessRuntimeRepository = repository): Pair<OperationCoordinator, String> {
+    private suspend fun operations(repo: HarnessRuntimeRepository = repository, laneName: String = "child"): Pair<OperationCoordinator, String> {
         val operations = OperationCoordinator(repo, Json, HarnessEventBus())
-        return operations to operations.acceptRun("s", UserMessage("user", 1, "write a file"), "child")
+        return operations to operations.acceptRun("s", UserMessage("user-$laneName", 1, "write a file"), laneName)
     }
 
     private suspend fun results() = repository.listEntries("s").mapNotNull {
@@ -77,6 +87,133 @@ class SubagentToolRoundRunnerTest {
         ) {
             if (operation.phase == phase.id) throw failure
             repository.settleEffect(entry, usage, operation, lane)
+        }
+    }
+
+    @Test fun `unknown names never fall back to command execution even with malformed arguments`() = runBlocking {
+        val (operations, id) = operations()
+        val runner = runner(operations) { error("unknown tool reached backend") }
+        runner.execute(listOf(
+            ApiToolCallSpec("unknown-command", "execute", """{"command":"touch outside.txt"}"""),
+            ApiToolCallSpec("unknown-json", "execute", "{"),
+            ApiToolCallSpec("bare-mcp", "mcp", "{}"),
+        ), "s", "/workspace", model, id, 0, null, null)
+        assertEquals(3, results().size)
+        assertTrue(results().all { !it.success && it.output.contains("未知工具") })
+        assertTrue(runner.blockedWrites.isEmpty())
+        assertTrue(runner.failedWrites.isEmpty())
+    }
+
+    @Test fun `wrapped and aliased writes cannot bypass the declared lease`() = runBlocking {
+        val (operations, id) = operations()
+        val runner = runner(operations) { error("out of lease write reached backend") }
+        runner.execute(listOf(
+            ApiToolCallSpec("alias", "write", """{"file_path":"outside/a.txt","content":"hello"}"""),
+            ApiToolCallSpec("wrapper", "write", """{"arguments":{"path":"outside/b.txt","content":"hello"}}"""),
+            ApiToolCallSpec("edit", "edit", """{"input":{"path":"outside/c.txt","oldText":"a","newText":"b"}}"""),
+            ApiToolCallSpec("download", "download", """{"arguments":{"url":"https://example.test/file","destination":"outside/d.txt"}}"""),
+        ), "s", "/workspace", model, id, 0, null, listOf("allowed"))
+        assertEquals(4, results().size)
+        assertTrue(results().all { !it.success })
+        assertTrue(results().single { it.output.contains("不接受参数 file_path") }.output.contains("参数校验未通过"))
+        assertEquals(3, results().count { it.output.contains("写租约范围") })
+        assertEquals(listOf("write outside/b.txt", "edit outside/c.txt", "download outside/d.txt"),
+            runner.blockedWrites)
+        assertTrue(runner.failedWrites.isEmpty())
+    }
+
+    @Test fun `allowed wrapped write preserves raw payload and tracks actual failure target`() = runBlocking {
+        val (operations, id) = operations()
+        val raw = """{"arguments":{"path":"allowed/a.txt","content":"hello"}}"""
+        var executions = 0
+        val runner = runner(operations) { call ->
+            executions++
+            assertEquals(Json.parseToJsonElement(raw), call.args)
+            val actual = ToolSchemaValidator.normalizeArgs(call.args)
+            assertEquals(Json.parseToJsonElement("""{"path":"allowed/a.txt","content":"hello"}"""), actual)
+            ToolResult("result-$executions", 2, call.id, executions > 1, "write attempt")
+        }
+        runner.execute(listOf(ApiToolCallSpec("first", "write", raw)),
+            "s", "/workspace", model, id, 0, null, listOf("allowed"))
+        assertEquals(setOf("write allowed/a.txt"), runner.failedWrites.keys)
+        runner.execute(listOf(ApiToolCallSpec("second", "write", raw)),
+            "s", "/workspace", model, id, 1, null, listOf("allowed"))
+        assertEquals(2, executions)
+        assertTrue(runner.failedWrites.isEmpty())
+    }
+
+    @Test fun `case insensitive builtin names still require their schema`() = runBlocking {
+        val (operations, id) = operations()
+        runner(operations) { error("invalid builtin reached backend") }.execute(
+            listOf(ApiToolCallSpec("invalid", "WRITE", "{}")),
+            "s", "/workspace", model, id, 0, null, null)
+        assertTrue(results().single().output.contains("缺少必填参数 path"))
+    }
+
+    @Test fun `history aliases and direct MCP compatibility preserve accepted arguments`() = runBlocking {
+        val (operations, id) = operations()
+        val specs = listOf(
+            ApiToolCallSpec("history", "history.search", """{"query":"earlier"}"""),
+            ApiToolCallSpec("mcp", "mcp__legacy__lookup", """{"params":{"file_path":"x","a.b":"y"}}"""),
+        )
+        val received = mutableListOf<JsonObject>()
+        runner(operations) { call ->
+            received += call.args
+            ToolResult("result-${call.id}", 2, call.id, true, "ok")
+        }.execute(specs, "s", "/workspace", model, id, 0, null, null)
+        assertEquals(specs.map { Json.parseToJsonElement(it.argumentsJson) }, received)
+        assertTrue(results().all { it.success })
+    }
+
+    @Test fun `lane mutation waits for main workspace lock but another workspace proceeds`() = runBlocking {
+        withTimeout(10_000) {
+            val dispatcher = ToolRoundDispatcher()
+            val held = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val holder = launch { dispatcher.withMutationLock("/workspace") { held.complete(Unit); release.await() } }
+            held.await()
+            val (operations, id) = operations()
+            var executions = 0
+            val childRunner = runner(operations, dispatcher) { call ->
+                executions++
+                ToolResult("result-$executions", 2, call.id, true, "written")
+            }
+            val child = async { childRunner.round(id) }
+            try {
+                repeat(5) { yield() }
+                assertEquals(0, executions)
+                assertTrue(results().isEmpty())
+                val (otherOps, otherId) = operations(laneName = "other")
+                runner(otherOps, dispatcher) { call ->
+                    ToolResult("other-result", 2, call.id, true, "other workspace")
+                }.execute(listOf(ApiToolCallSpec("other", "write", """{"path":"a.txt","content":"hello"}""")),
+                    "s", "/other-workspace", model, otherId, 0, null, null)
+                assertEquals(0, executions)
+                release.complete(Unit)
+                child.await()
+                holder.join()
+                assertEquals(1, executions)
+                assertEquals(0, dispatcher.retainedMutationScopeCount)
+            } finally { release.complete(Unit); child.cancel(); holder.cancel() }
+        }
+    }
+
+    @Test fun `cancelled lane waiting for mutation lock never records intent or runs backend`() = runBlocking {
+        withTimeout(10_000) {
+            val dispatcher = ToolRoundDispatcher()
+            val held = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val holder = launch { dispatcher.withMutationLock("/workspace") { held.complete(Unit); release.await() } }
+            held.await()
+            val (operations, id) = operations()
+            val child = async { runner(operations, dispatcher) { error("cancelled backend ran") }.round(id) }
+            try {
+                repeat(5) { yield() }
+                child.cancel()
+                child.join()
+                assertTrue(repository.listEntries("s").none { Json.decodeFromString<HarnessMessage>(it.payloadJson) is ToolCall })
+            } finally { release.complete(Unit); holder.join() }
+            assertEquals(0, dispatcher.retainedMutationScopeCount)
         }
     }
 
@@ -104,13 +241,24 @@ class SubagentToolRoundRunnerTest {
     }
 
     @Test
-    fun `execution exception is recorded as unresolved write failure`() = runBlocking {
+    fun `execution exception is recorded as an unknown write outcome`() = runBlocking {
         val (operations, id) = operations()
         val runner = runner(operations) { throw IllegalStateException("disk unavailable") }
         runner.round(id)
         assertEquals(1, runner.failedWrites.size)
         assertFalse(results().single().success)
-        assertTrue(results().single().output.contains("disk unavailable"))
+        assertEquals(ToolRecoveryNotice.OUTCOME_UNKNOWN, results().single().errorCode)
+        assertTrue(results().single().output.contains("不代表执行失败"))
+        assertFalse(results().single().output.contains("disk unavailable"))
+    }
+
+    @Test fun `read execution exception retains an ordinary failure without unknown side effects`() = runBlocking {
+        val (operations, id) = operations()
+        runner(operations) { throw IllegalStateException("read unavailable") }.execute(
+            listOf(ApiToolCallSpec("read", "read", """{"path":"a.txt"}""")),
+            "s", "/workspace", model, id, 0, null, null)
+        assertEquals(null, results().single().errorCode)
+        assertTrue(results().single().output.contains("read unavailable"))
     }
 
     @Test

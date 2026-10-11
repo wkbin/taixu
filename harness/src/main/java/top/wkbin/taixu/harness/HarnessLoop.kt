@@ -107,6 +107,7 @@ class HarnessLoop(
     private val branchSummarizer: BranchSummarizer,
     private val skillEvolutionAdvisor: SkillEvolutionAdvisor? = null,
     private val turnCoordinator: SessionTurnCoordinator,
+    private val executionEnvironments: top.wkbin.taixu.harness.environment.SessionExecutionEnvironments? = null,
 ) : InteractiveSessionControl {
     private val loopScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -547,15 +548,13 @@ class HarnessLoop(
         sessionDao.rename(id, title, System.currentTimeMillis())
     }
     override suspend fun deleteSession(id: String) {
-        // 注意：这里不能全程持有会话互斥锁——cancelAndJoin 会等待 runLoop 的 finally
-        // 段，而 finally 段需要抢同一把锁，全程持锁必然死锁。因此采用 tombstone +
-        // 结束时移除 tombstone 的方案；对"协程在删除完成后才拿到锁"的窗口，
-        // 由 startSessionRun 锁内的 DB 存在性检查兜底（见该函数注释）。
+        // Tombstone blocks new runs; do not hold the session lock while draining finally blocks.
         tombstonedSessions.add(id)
         A2uiSurfaceBus.releaseSession(id)
         cancelApprovalTimeout(id)
         _sessionPendingMessages[id]?.value = emptyList()
         sessionJobs[id]?.cancelAndJoin()
+        executionEnvironments?.closeSession(id)
         _sessionPendingMessages.remove(id)
         turnCoordinator.evictSession(id)
         messageProjector.removeSession(id)
@@ -1497,6 +1496,10 @@ class HarnessLoop(
 
             // Approval resumption is the legitimate successor to a WAITING_APPROVAL run;
             // claim the slot unconditionally (that state still reports busy to senders).
+            val approvedTools = ApprovalToolRunner(toolRoundDispatcher, operationCoordinator, json, messageStore, messageProjector) {
+                    call, session, workspace, operation ->
+                toolExecutor.execute(call, session, workspace, bypassApproval = true, operationId = operation)
+            }
             startClaimedSessionRun(sessId, durableTaskId) {
                 var approvalResultPersisted = false
                 try {
@@ -1519,21 +1522,7 @@ class HarnessLoop(
                                 request.riskLevel,
                             )
                         }
-                        val args = json.parseToJsonElement(request.argumentsJson) as? JsonObject
-                            ?: error("审批参数不是 JSON 对象")
-                        val tool = HarnessApiMapper.toolByName(request.toolName)
-                        // 被批准的通常是 write/base/mcp 等变更类工具：必须与 ToolRoundDispatcher
-                        // 走同一把（按工作区分片的）变更互斥锁，否则用户批准的写入会与并发
-                        // 会话的同工作区命令并发执行，正是互斥锁要防的写踩踏。
-                        toolRoundDispatcher.withMutationLock(request.workspace) {
-                            toolExecutor.execute(
-                                ToolCall(request.toolCallId, request.createdAt, tool, args, rawToolName = request.toolName),
-                                sessId,
-                                request.workspace,
-                                bypassApproval = true,
-                                operationId = request.operationId,
-                            )
-                        }
+                        approvedTools.run(request).also { approvalResultPersisted = true }
                     } else {
                         ToolResult(
                             id = newId(),
@@ -1543,12 +1532,13 @@ class HarnessLoop(
                             output = resumePolicy.rejectionResultMessage(),
                         )
                     }
-                    val activeOperation = operationCoordinator.active(sessId)
-                    if (activeOperation != null) {
-                        operationCoordinator.toolSettled(activeOperation.id, result, round = 0, toolName = request.toolName)
-                        messageProjector.publishPersisted(sessId, result)
-                    } else {
-                        messageProjector.append(sessId, result)
+                    if (!approvalResultPersisted) {
+                        val activeOperation = operationCoordinator.active(sessId)
+                        if (activeOperation != null) {
+                            operationCoordinator.toolSettled(activeOperation.id, result, round = 0, toolName = request.toolName)
+                            messageProjector.publishPersisted(sessId, result)
+                        } else messageProjector.append(sessId, result)
+                        approvalResultPersisted = true
                     }
                     if (!verdict.isInvalid) {
                         approvalRepository.mark(
@@ -1556,11 +1546,11 @@ class HarnessLoop(
                             resumePolicy.finalStatus(approved, result.success),
                         )
                     }
-                    approvalResultPersisted = true
                     runLoopInternal(sessId, startedAt = now(), taskId = durableTaskId)
                 } catch (cancellation: CancellationException) {
                     if (!approvalResultPersisted) {
                         withContext(NonCancellable) {
+                            if (approved && !verdict.isInvalid) approvedTools.repairInterrupted(request, userStopped = true)
                             approvalRepository.mark(
                                 request.id,
                                 if (approved) AgentApprovalRequestEntity.STATUS_FAILED
@@ -1577,17 +1567,8 @@ class HarnessLoop(
                 } catch (throwable: Throwable) {
                     logger.e("Approval resolution failed for request ${request.id}", throwable)
                     if (!approvalResultPersisted) {
+                        if (approved && !verdict.isInvalid) approvedTools.repairInterrupted(request, userStopped = false)
                         approvalRepository.mark(request.id, AgentApprovalRequestEntity.STATUS_FAILED)
-                        messageProjector.append(
-                            sessId,
-                            ToolResult(
-                                id = newId(),
-                                createdAt = now(),
-                                toolCallId = request.toolCallId,
-                                success = false,
-                                output = "批准操作执行失败：${friendly(throwable)}",
-                            ),
-                        )
                     }
                     RunResult.Failed(throwable.message ?: "审批操作执行失败：${throwable::class.simpleName}")
                 }
