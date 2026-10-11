@@ -494,9 +494,9 @@ class HarnessLoop(
             }
         }
 
-        // A process can die after one operation finishes but before finishRun drains NEXT_RUN.
-        // Restart the first durable queue item for otherwise-idle sessions.
-        for (sessionId in agentTaskStateMachine.queued().map { it.sessionId }.filter { it.isNotBlank() }.distinct()) {
+        for (sessionId in (agentTaskStateMachine.queued().map { it.sessionId } + promptQueueManager.sessionsHolding(
+            sessions.map { it.id }.filterNot { it.startsWith(WORKFLOW_SESSION_PREFIX) },
+            setOf(PromptQueue.STEER, PromptQueue.NEXT_RUN))).filter { it.isNotBlank() }.distinct()) {
             if (sessions.none { it.id == sessionId } || approvalRepository.pendingNow(sessionId).isNotEmpty()) continue
             turnCoordinator.withSessionMutex(sessionId) {
                 if (!isSessionBusy(sessionId) && startNextQueuedLocked(sessionId)) recovered++
@@ -864,9 +864,9 @@ class HarnessLoop(
         refreshPendingProjection(sessId)
     }
 
-    /** Caller holds the session mutex. Consumes and starts exactly one durable next-run item. */
+    /** Caller holds the session mutex. Starts one next run, promoting leftover steer when none is pending. */
     private suspend fun startNextQueuedLocked(sessId: String): Boolean {
-        val (queueItemId, next) = promptQueueManager.first(sessId, PromptQueue.NEXT_RUN) ?: return false
+        val (queueItemId, next) = promptQueueManager.nextRunOrPromotedSteer(sessId) ?: return false
         val taskId = next.taskId ?: newId().also { generated ->
             createDurableTask(sessId, next.copy(taskId = generated))
         }
@@ -1304,11 +1304,11 @@ class HarnessLoop(
                     stateMirrors.setThinkingLive(sessId, false)
                 },
                 consumeFollowUps = {
-                    val followUps = promptQueueManager.consume(sessId, PromptQueue.FOLLOW_UP)
+                    val taken = promptQueueManager.takeTextRoundInput(sessId)
                     refreshPendingProjection(sessId)
-                    followUps.forEach { messageProjector.publishPersisted(sessId, it) }
-                    metrics.followUpConsumed(followUps.size)
-                    followUps.size
+                    taken.followUps.forEach { messageProjector.publishPersisted(sessId, it) }
+                    taken.steering.forEach { agentEventLogger.log(sessId, "SteeringMessage", it.text); messageProjector.publishPersisted(sessId, it) }
+                    metrics.followUpConsumed(taken.followUps.size); metrics.steeringInjected(taken.steering.size); taken.continuationCount
                 },
                 enforceToolLimit = { allCalls, result ->
                     val effectiveCalls = toolRoundRunner.enforceToolRoundLimit(

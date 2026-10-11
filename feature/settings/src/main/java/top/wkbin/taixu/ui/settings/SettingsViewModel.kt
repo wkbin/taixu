@@ -82,6 +82,7 @@ import top.wkbin.taixu.core.model.McpToolInfo
 import top.wkbin.taixu.core.model.McpTransportType
 import top.wkbin.taixu.core.model.QuickPhrase
 import top.wkbin.taixu.core.model.RunMode
+import top.wkbin.taixu.core.model.RunningSendMode
 import top.wkbin.taixu.core.model.StorageMountBinding
 import top.wkbin.taixu.core.model.UpdateCheckState
 import top.wkbin.taixu.core.model.skill.ClawHubMarketItem
@@ -792,14 +793,12 @@ class SettingsViewModel(
         translationManager.refreshStatus()
     }
 
-    fun setThinkingAutoTranslate(value: Boolean) {
-        viewModelScope.launch {
-            agentPreferences.setThinkingAutoTranslate(value)
-        }
-    }
+    fun setThinkingAutoTranslate(value: Boolean) { viewModelScope.launch { agentPreferences.setThinkingAutoTranslate(value) } }
     val chatRoundCollapse: StateFlow<Boolean> = agentPreferences.chatRoundCollapse
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     fun setChatRoundCollapse(value: Boolean) { viewModelScope.launch { agentPreferences.setChatRoundCollapse(value) } }
+    val runningSendMode: StateFlow<RunningSendMode> = agentPreferences.runningSendMode.stateIn(viewModelScope, SharingStarted.Eagerly, RunningSendMode.QUEUE)
+    fun setRunningSendMode(value: RunningSendMode) { viewModelScope.launch { agentPreferences.setRunningSendMode(value) } }
 
     val customSystemPromptEnabled: StateFlow<Boolean> = agentPreferences.customSystemPromptEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)

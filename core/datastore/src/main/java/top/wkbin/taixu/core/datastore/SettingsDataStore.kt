@@ -14,6 +14,7 @@ import top.wkbin.taixu.core.model.AgentPlugin
 import top.wkbin.taixu.core.model.BuiltinPlugins
 import top.wkbin.taixu.core.model.EnvironmentVariable
 import top.wkbin.taixu.core.model.ExecutionMode
+import top.wkbin.taixu.core.model.RunningSendMode
 import top.wkbin.taixu.core.security.SecretManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.Serializable
@@ -645,6 +646,10 @@ class SettingsDataStore(
     val chatRoundCollapse: Flow<Boolean> = context.chatRoundCollapsePreference
     suspend fun setChatRoundCollapse(value: Boolean) { context.setChatRoundCollapsePreference(value) }
 
+    /** 运行中发送方式：排队 / 引导（默认排队）。实现见 RunningSendModePreferences.kt。 */
+    val runningSendMode: Flow<RunningSendMode> = context.runningSendModePreference
+    suspend fun setRunningSendMode(value: RunningSendMode) { context.setRunningSendModePreference(value) }
+
     /** 全局推理深度：auto / disabled / low / medium / high（作用于未单独设置强度的模型）。 */
     val defaultReasoningDepth: Flow<String> = context.settingsDataStore.data.map { it[defaultReasoningDepthKey] ?: "auto" }
     suspend fun setDefaultReasoningDepth(value: String) {
@@ -902,12 +907,6 @@ class SettingsDataStore(
         .map { it[stringPreferencesKey("ftp_${normalizedDistroId(distroId)}_password")] }
         .first()
         ?.let(::decodeProtectedValue)
-
-    /** 同步读取插件启用状态（供运行时启停判断）。 */
-    suspend fun isPluginEnabled(pluginId: String): Boolean = allPlugins.first().any { it.id == pluginId && it.isEnabled }
-
-    /** 插件启用状态的响应式流。 */
-    fun isPluginEnabledFlow(pluginId: String): Flow<Boolean> = allPlugins.map { list -> list.any { it.id == pluginId && it.isEnabled } }
 
     /** 获取所有 Plugin（预置），根据用户启用状态计算 isEnabled */
     private val enabledPluginsKey = stringSetPreferencesKey("agent_enabled_plugin_ids")

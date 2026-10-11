@@ -7,6 +7,7 @@ import top.wkbin.taixu.core.model.ExecutionMode
 import top.wkbin.taixu.core.model.McpConnectionState
 import top.wkbin.taixu.core.model.ApprovalMode
 import top.wkbin.taixu.core.model.RunMode
+import top.wkbin.taixu.core.model.RunningSendMode
 import top.wkbin.taixu.core.database.AiModelRepository
 import top.wkbin.taixu.core.database.AiModelEntity
 import top.wkbin.taixu.core.database.HarnessSessionRepository
@@ -34,7 +35,6 @@ import top.wkbin.taixu.harness.events.HarnessEventBus
 import top.wkbin.taixu.harness.workflow.ProactiveWorkflowAdvisor
 import top.wkbin.taixu.harness.workflow.ProactiveWorkflowSuggestion
 import top.wkbin.taixu.harness.mcp.McpManager
-import top.wkbin.taixu.harness.queue.PromptQueue
 import top.wkbin.taixu.harness.session.ConversationBranch
 import top.wkbin.taixu.harness.session.ConversationBranchKind
 import top.wkbin.taixu.harness.session.LaneManager
@@ -308,8 +308,12 @@ class ChatViewModel(
     val pendingMessages: StateFlow<List<PendingMessage>> = harnessLoop.pendingMessages
     val queuedPrompts: StateFlow<List<QueuedPrompt>> = harnessLoop.queuedPrompts
 
-    private val _sendMode = MutableStateFlow(ComposerSendMode.NEXT_RUN)
-    val sendMode: StateFlow<ComposerSendMode> = _sendMode.asStateFlow()
+    /** 发送键语义：运行中跟随「运行中发送方式」偏好，空闲恒为 NEXT_RUN（空闲发送即发起新一轮，无插队语境）。 */
+    private val runningSendModePref: StateFlow<RunningSendMode> = settingsDataStore.runningSendMode
+        .stateIn(viewModelScope, SharingStarted.Eagerly, RunningSendMode.QUEUE)
+    val sendMode: StateFlow<ComposerSendMode> = combine(harnessLoop.running, runningSendModePref) { running, mode ->
+        if (running && mode == RunningSendMode.STEER) ComposerSendMode.STEER else ComposerSendMode.NEXT_RUN
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ComposerSendMode.NEXT_RUN)
 
     val runtimeEvents: StateFlow<List<HarnessEvent>> = combine(
         harnessLoop.currentSessionId,
@@ -958,10 +962,6 @@ class ChatViewModel(
         }
     }
 
-    fun setSendMode(mode: ComposerSendMode) {
-        _sendMode.value = mode
-    }
-
     private val _pendingAttachments = MutableStateFlow<List<ChatAttachment>>(emptyList())
 
     /** 待发送附件；处理（复制/压缩/编码）在 IO 线程完成 */
@@ -1055,9 +1055,11 @@ class ChatViewModel(
         if (!running.value) {
             harnessLoop.send(effectiveText, imageUrls = imageUrls)
         } else {
-            when (_sendMode.value) {
-                ComposerSendMode.STEER -> harnessLoop.steer(effectiveText, imageUrls = imageUrls)
-                ComposerSendMode.NEXT_RUN -> harnessLoop.send(effectiveText, imageUrls = imageUrls)
+            // 运行中投递语义跟随「运行中发送方式」偏好；send() 非挂起函数，故读 stateIn 快照。
+            // STEER 在当前这批工具调用完成后、下一轮推理开始前注入，不打断正在执行的工具调用。
+            when (runningSendModePref.value) {
+                RunningSendMode.STEER -> harnessLoop.steer(effectiveText, imageUrls = imageUrls)
+                RunningSendMode.QUEUE -> harnessLoop.send(effectiveText, imageUrls = imageUrls)
             }
         }
     }
@@ -1509,10 +1511,8 @@ private fun synthesizeHistoricalEvents(sessionId: String, messages: List<Harness
     return events
 }
 
-enum class ComposerSendMode(val queue: PromptQueue) {
-    STEER(PromptQueue.STEER),
-    NEXT_RUN(PromptQueue.NEXT_RUN),
-}
+/** 聊天发送键语义：仅驱动发送键配色。实际投递行为由「运行中发送方式」偏好（RunningSendMode）决定。 */
+enum class ComposerSendMode { STEER, NEXT_RUN }
 
 private data class ContextUsageInputs(
     val currentMessages: List<HarnessMessage>,

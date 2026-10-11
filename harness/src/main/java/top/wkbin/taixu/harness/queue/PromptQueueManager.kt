@@ -16,6 +16,14 @@ enum class PromptQueue(val id: String) {
     STEER("steer"), FOLLOW_UP("follow_up"), NEXT_RUN("next_run")
 }
 
+/** Input drained at the end of a text-only round. [continuationCount] keeps the turn alive. */
+data class TextRoundInput(
+    val followUps: List<UserMessage>,
+    val steering: List<UserMessage>,
+) {
+    val continuationCount: Int get() = followUps.size + steering.size
+}
+
 /**
  * Durable prompt queues with explicit consumption timing.
  *
@@ -92,6 +100,50 @@ class PromptQueueManager(
     suspend fun clear(sessionId: String, queue: PromptQueue, laneName: String = SessionTreeStore.MAIN_LANE) {
         repository.clearQueue(sessionId, laneName, queue.id)
     }
+
+    /**
+     * Text-only rounds are the last chance to deliver input before the run ends.
+     * Follow-ups stay ahead of steering so a correction is the newest injected turn.
+     */
+    suspend fun takeTextRoundInput(
+        sessionId: String,
+        laneName: String = SessionTreeStore.MAIN_LANE,
+    ): TextRoundInput {
+        val followUps = consume(sessionId, PromptQueue.FOLLOW_UP, laneName = laneName)
+        val steering = consume(sessionId, PromptQueue.STEER, laneName = laneName)
+        return TextRoundInput(followUps, steering)
+    }
+
+    /**
+     * When a run ends with steering still queued and no next run waiting, those
+     * corrections become the next run. createdAt and id are unchanged, so order holds.
+     * Returns 0 when a next run is already pending or nothing is steered.
+     */
+    suspend fun promoteSteeringToNextRun(
+        sessionId: String,
+        laneName: String = SessionTreeStore.MAIN_LANE,
+    ): Int {
+        if (first(sessionId, PromptQueue.NEXT_RUN, laneName) != null) return 0
+        return repository.retargetQueue(sessionId, laneName, PromptQueue.STEER.id, PromptQueue.NEXT_RUN.id)
+    }
+
+    /** Next queued run, promoting leftover steering first when nothing else is waiting. */
+    suspend fun nextRunOrPromotedSteer(
+        sessionId: String,
+        laneName: String = SessionTreeStore.MAIN_LANE,
+    ): Pair<String, PendingMessage>? {
+        if (first(sessionId, PromptQueue.NEXT_RUN, laneName) == null) {
+            promoteSteeringToNextRun(sessionId, laneName)
+        }
+        return first(sessionId, PromptQueue.NEXT_RUN, laneName)
+    }
+
+    /** Sessions among [sessionIds] that still hold any of [queues], in input order. */
+    suspend fun sessionsHolding(
+        sessionIds: Iterable<String>,
+        queues: Set<PromptQueue>,
+        laneName: String = SessionTreeStore.MAIN_LANE,
+    ): List<String> = sessionIds.filter { id -> queues.any { queue -> first(id, queue, laneName) != null } }
 
     /** Atomically turns queued prompts into immutable entries on the given lane. */
     suspend fun consume(

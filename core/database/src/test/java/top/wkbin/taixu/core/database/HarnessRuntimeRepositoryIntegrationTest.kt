@@ -277,6 +277,59 @@ class HarnessRuntimeRepositoryIntegrationTest {
     }
 
     @Test
+    fun `finishOperation promotes leftover steer in order and drops follow-up`() = runBlocking {
+        val sessionId = "s-steer"
+        dao.acceptOperation(
+            entry("e1", sessionId, null),
+            lane(sessionId, leafId = "e1", currentOperationId = "op-steer"),
+            operation("op-steer", sessionId),
+        )
+        dao.insertQueueItem(HarnessQueueItemEntity("s-late", sessionId, "main", "op-steer", "steer", 30L, "late"))
+        dao.insertQueueItem(HarnessQueueItemEntity("s-early", sessionId, "main", "op-steer", "steer", 10L, "early"))
+        dao.insertQueueItem(HarnessQueueItemEntity("s-mid", sessionId, "main", null, "steer", 20L, "mid"))
+        dao.insertQueueItem(HarnessQueueItemEntity("f-up", sessionId, "main", "op-steer", "follow_up", 15L, "follow"))
+
+        repository.finishOperation(
+            HarnessLaneResultEntity(sessionId, "main", "op-steer", "failed", "e1", null, 2L),
+            lane(sessionId, leafId = "e1", currentOperationId = null),
+        )
+
+        val next = repository.listQueue(sessionId, "main", "next_run")
+        assertEquals(listOf("s-early", "s-late"), next.map { it.id })
+        assertEquals(listOf("early", "late"), next.map { it.payloadJson })
+        assertTrue(next.all { it.operationId == null })
+        val leftover = repository.listQueue(sessionId, "main", "steer")
+        assertEquals("s-mid", leftover.single().id)
+        assertNull(leftover.single().operationId)
+        assertTrue(repository.listQueue(sessionId, "main", "follow_up").isEmpty())
+        assertNull(repository.findOperation("op-steer"))
+    }
+
+    @Test
+    fun `finishOperation drops operation steer when a next run is already waiting`() = runBlocking {
+        val sessionId = "s-steer-keep"
+        dao.acceptOperation(
+            entry("e1", sessionId, null),
+            lane(sessionId, leafId = "e1", currentOperationId = "op-keep"),
+            operation("op-keep", sessionId),
+        )
+        dao.insertQueueItem(HarnessQueueItemEntity("n1", sessionId, "main", "op-keep", "next_run", 5L, "queued"))
+        dao.insertQueueItem(HarnessQueueItemEntity("s1", sessionId, "main", "op-keep", "steer", 10L, "steer"))
+        dao.insertQueueItem(HarnessQueueItemEntity("f1", sessionId, "main", "op-keep", "follow_up", 11L, "follow"))
+
+        repository.finishOperation(
+            HarnessLaneResultEntity(sessionId, "main", "op-keep", "completed", "e1", null, 2L),
+            lane(sessionId, leafId = "e1", currentOperationId = null),
+        )
+
+        val next = repository.listQueue(sessionId, "main", "next_run")
+        assertEquals(listOf("n1"), next.map { it.id })
+        assertNull(next.single().operationId)
+        assertTrue(repository.listQueue(sessionId, "main", "steer").isEmpty())
+        assertTrue(repository.listQueue(sessionId, "main", "follow_up").isEmpty())
+    }
+
+    @Test
     fun `deleteSessionData cascades across all runtime tables`() = runBlocking {
         val sessionId = "s5"
         val op = operation("op-5", sessionId)

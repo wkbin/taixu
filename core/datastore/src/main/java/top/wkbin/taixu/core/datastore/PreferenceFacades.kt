@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import top.wkbin.taixu.core.model.EnvironmentVariable
 import top.wkbin.taixu.core.model.ExecutionMode
+import top.wkbin.taixu.core.model.RunningSendMode
 
 /** Narrow preference views keep consumers from depending on the complete settings schema. */
 class AppearancePreferences(private val store: SettingsDataStore) {
@@ -164,6 +165,8 @@ class AgentPreferences(private val store: SettingsDataStore) {
     val thinkingAutoTranslate get() = store.thinkingAutoTranslate
     val chatRoundCollapse get() = store.chatRoundCollapse
     suspend fun setChatRoundCollapse(value: Boolean) = store.setChatRoundCollapse(value)
+    val runningSendMode get() = store.runningSendMode
+    suspend fun setRunningSendMode(value: RunningSendMode) = store.setRunningSendMode(value)
     val defaultReasoningDepth get() = store.defaultReasoningDepth
     val contextCompactionEnabled get() = store.contextCompactionEnabled
     val maxToolRounds get() = store.maxToolRounds

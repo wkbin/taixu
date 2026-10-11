@@ -119,4 +119,9 @@
     <string name="settings_feature_sentinel_minute_label">Minute (0–59)</string>
     <string name="settings_feature_sentinel_confirm">Save</string>
     <string name="settings_feature_sentinel_cancel">Cancel</string>
+    <string name="agent_running_send_mode_title">Send while running</string>
+    <string name="agent_running_send_mode_queue">Queue</string>
+    <string name="agent_running_send_mode_steer">Steer</string>
+    <string name="agent_running_send_mode_queue_description">While the current turn is still running, new input waits and starts as the next turn after it finishes.</string>
+    <string name="agent_running_send_mode_steer_description">While the current turn is still running, new input is injected after the current batch of tool calls finishes and before the next inference round.</string>
 </resources>

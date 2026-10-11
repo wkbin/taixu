@@ -242,6 +242,9 @@ interface HarnessRuntimeDao {
     @Query("DELETE FROM harness_queue_items WHERE sessionId = :sessionId AND laneName = :laneName AND queueType = :queueType")
     suspend fun clearQueue(sessionId: String, laneName: String, queueType: String)
 
+    @Query("UPDATE harness_queue_items SET queueType = :toType WHERE sessionId = :sessionId AND laneName = :laneName AND queueType = :fromType")
+    suspend fun retargetQueue(sessionId: String, laneName: String, fromType: String, toType: String): Int
+
     @Query("DELETE FROM harness_operations WHERE id = :operationId")
     suspend fun deleteOperation(operationId: String)
 
@@ -250,6 +253,9 @@ interface HarnessRuntimeDao {
 
     @Query("UPDATE harness_queue_items SET operationId = NULL WHERE operationId = :operationId AND queueType = 'next_run'")
     suspend fun detachNextRunQueue(operationId: String)
+
+    @Query("UPDATE harness_queue_items SET queueType = 'next_run', operationId = NULL WHERE sessionId = :sessionId AND laneName = :laneName AND operationId = :operationId AND queueType = 'steer'")
+    suspend fun promoteOperationSteering(sessionId: String, laneName: String, operationId: String)
 
     @Query("DELETE FROM harness_entries WHERE sessionId = :sessionId")
     suspend fun deleteSessionEntries(sessionId: String)
@@ -357,13 +363,13 @@ interface HarnessRuntimeDao {
 
     @Transaction
     suspend fun finishOperation(result: HarnessLaneResultEntity, lane: HarnessLaneEntity) {
-        // Next-run inputs belong to future runs. Preserve them through both normal
-        // completion and takeover, including a crash before the next admission.
         detachNextRunQueue(result.operationId)
+        if (listQueue(lane.sessionId, lane.name, "next_run").isEmpty()) {
+            promoteOperationSteering(lane.sessionId, lane.name, result.operationId)
+        }
         deleteOperationQueue(result.operationId)
         deleteOperation(result.operationId)
         upsertLaneResult(result)
-        // A later run may have claimed this lane since the caller read its snapshot.
         clearLaneOperationIfCurrent(lane.sessionId, lane.name, result.operationId, lane.updatedAt, lane.faulted)
     }
 
