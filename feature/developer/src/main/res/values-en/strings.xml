@@ -108,6 +108,12 @@
     <string name="developer_text_0106" formatted="false">Re-check initialization</string>
     <string name="developer_text_0107" formatted="false">Retry initialization</string>
     <string name="developer_text_0108" formatted="false">Error</string>
+    <string name="developer_text_0109" formatted="false">Message feedback</string>
+    <string name="developer_text_0110" formatted="false">Read-only view of user ratings on assistant messages (latest 50)</string>
+    <string name="developer_text_0111" formatted="false">No feedback yet</string>
+    <string name="developer_text_0112" formatted="false">Helpful</string>
+    <string name="developer_text_0113" formatted="false">Problematic</string>
+    <string name="developer_text_0114" formatted="false">Unknown session</string>
     <string name="developer_active_process_count">%1$s active processes</string>
     <string name="developer_rootfs_update_failed">RootFS update failed: %1$s</string>
     <string name="developer_rootfs_check_failed">RootFS update check failed: %1$s</string>
@@ -122,4 +128,5 @@
     <string name="developer_cleanup_failed">Cleanup failed: %1$s</string>
     <string name="developer_device_space_available">Device space available: %1$s</string>
     <string name="developer_reset_failed">Reset failed: %1$s</string>
+    <string name="developer_feedback_count">%1$s feedback entries</string>
 </resources>

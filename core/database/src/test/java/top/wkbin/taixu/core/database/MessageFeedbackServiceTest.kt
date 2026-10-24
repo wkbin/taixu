@@ -2,6 +2,7 @@ package top.wkbin.taixu.core.database
 
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -101,4 +102,33 @@ class MessageFeedbackServiceTest {
         service.deleteForSession("s")
         assertTrue(service.listForSession("s").isEmpty())
     }
+
+    @Test
+    fun `find returns saved feedback for prefill and null after cleanup`() = runBlocking {
+        seedAssistant("s", "m1")
+        assertNull(service.find("m1"))
+        service.set("s", "m1", "down", "结论不对")
+        assertEquals("down", service.find("m1")?.rating)
+        assertEquals("结论不对", service.find("m1")?.note)
+        service.deleteForSession("s")
+        assertNull(service.find("m1"))
+    }
+
+    @Test
+    fun `observeRecent lists newest feedback first across sessions with limit`() = runBlocking {
+        val dao = database.agentMessageFeedbackDao()
+        dao.upsert(feedback("old", "s1", updatedAt = 100))
+        dao.upsert(feedback("new", "s2", updatedAt = 200))
+        assertEquals(listOf("new", "old"), service.observeRecent(limit = 10).first().map { it.messageId })
+        assertEquals(listOf("new"), service.observeRecent(limit = 1).first().map { it.messageId })
+    }
+
+    private fun feedback(messageId: String, sessionId: String, updatedAt: Long) = AgentMessageFeedbackEntity(
+        id = AgentMessageFeedbackEntity.idOf(messageId),
+        sessionId = sessionId,
+        messageId = messageId,
+        rating = AgentMessageFeedbackEntity.RATING_UP,
+        createdAt = updatedAt,
+        updatedAt = updatedAt,
+    )
 }

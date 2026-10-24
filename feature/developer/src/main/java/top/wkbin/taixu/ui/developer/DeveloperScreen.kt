@@ -25,7 +25,6 @@ import top.wkbin.taixu.ui.components.RuntimeOutlinedButton as OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import top.wkbin.taixu.ui.components.RuntimeSwitch as Switch
 import top.wkbin.taixu.ui.developer.LocalizedText as Text
 import top.wkbin.taixu.ui.components.RuntimeTextButton as TextButton
 import androidx.compose.runtime.Composable
@@ -403,61 +402,23 @@ internal fun LocalDeveloperScreen(
                 }
             }
 
-            SectionHeader("智能体诊断", "智能体执行流、工具调用与错误详情本地持久化")
-            RuntimeCard(Modifier.fillMaxWidth()) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    IconTile(RuntimeIconName.Shield)
-                    Column(Modifier.weight(1f)) {
-                        Text("智能体本地调试日志", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            if (agentLoggingEnabled) "已启用（文件大小：${agentLogSize.toReadableSize()}）" else "已关闭（不写入本地日志文件）",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (agentLogLocation.isNotBlank()) {
-                            Text(
-                                "日志文件：$agentLogLocation",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                    Switch(
-                        checked = agentLoggingEnabled,
-                        onCheckedChange = { arg0 -> viewModel?.setAgentLoggingEnabled(arg0) },
-                    )
-                }
-                if (agentLoggingEnabled || agentLogSize > 0L) {
-                    Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedButton(
-                            onClick = {
-                                agentLogText = viewModel?.readAgentLogs().orEmpty()
-                                showAgentLogDialog = true
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("查看日志")
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                val logs = viewModel?.readAgentLogs().orEmpty()
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                clipboard.setPrimaryClip(ClipData.newPlainText("TaiXu Agent Logs", logs))
-                                Toast.makeText(context, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("复制全部")
-                        }
-                        TextButton(
-                            onClick = { viewModel?.clearAgentLogs() },
-                        ) {
-                            Text("清空", color = MaterialTheme.colorScheme.error)
-                        }
-                    }
-                }
-            }
+            AgentDiagnosticsSection(
+                agentLoggingEnabled = agentLoggingEnabled,
+                agentLogSize = agentLogSize,
+                agentLogLocation = agentLogLocation,
+                onToggleLogging = { viewModel?.setAgentLoggingEnabled(it) },
+                onViewLogs = {
+                    agentLogText = viewModel?.readAgentLogs().orEmpty()
+                    showAgentLogDialog = true
+                },
+                onCopyLogs = {
+                    val logs = viewModel?.readAgentLogs().orEmpty()
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("TaiXu Agent Logs", logs))
+                    Toast.makeText(context, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                },
+                onClearLogs = { viewModel?.clearAgentLogs() },
+            )
 
             SectionHeader("命令诊断", "在隔离的 Linux 环境中执行一次性 Shell 命令")
             RuntimeCard(Modifier.fillMaxWidth()) {
@@ -681,15 +642,6 @@ private fun ResourceHeader(icon: RuntimeIconName, title: String, detail: String,
         }
         TextButton(onClick = onRefresh) { Text("刷新") }
     }
-}
-
-private fun Long.toReadableSize(): String {
-    if (this < 1024L) return "$this B"
-    val units = listOf("KB", "MB", "GB", "TB")
-    var value = this.toDouble()
-    var index = -1
-    while (value >= 1024 && index < units.lastIndex) { value /= 1024; index += 1 }
-    return "%.1f %s".format(value, units[index])
 }
 
 private fun describeState(state: RuntimeState): String = when (state) {

@@ -31,7 +31,7 @@
         "feature/components/src/main/java/top/wkbin/taixu/ui/components/RuntimeComponents.kt": 795,
         "feature/components/src/main/java/top/wkbin/taixu/ui/components/RuntimeGlassControls.kt": 638,
         "feature/developer/src/main/java/top/wkbin/taixu/ui/developer/AdbLogcatScreen.kt": 431,
-        "feature/developer/src/main/java/top/wkbin/taixu/ui/developer/DeveloperScreen.kt": 713,
+        "feature/developer/src/main/java/top/wkbin/taixu/ui/developer/DeveloperScreen.kt": 665,
         "feature/developer/src/main/java/top/wkbin/taixu/ui/developer/DeveloperViewModel.kt": 439,
         "feature/git/src/main/java/top/wkbin/taixu/ui/git/GitManager.kt": 796,
         "feature/git/src/main/java/top/wkbin/taixu/ui/git/GitScreen.kt": 1408,

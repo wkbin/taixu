@@ -14,6 +14,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,7 +46,18 @@ internal fun MessageFeedbackAction(messageId: String) {
     val tracker = koinInject<CurrentSessionTracker>()
     val context = LocalContext.current
     var showDialog by remember(messageId) { mutableStateOf(false) }
+    var existing by remember(messageId) { mutableStateOf<AgentMessageFeedbackEntity?>(null) }
+    var prefilled by remember(messageId) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    // 每次打开都重读：用户可能在 Web 端或其他入口改过评价。
+    // 首次打开等读取完成再显示对话框，避免先闪一下默认“有帮助”。
+    LaunchedEffect(showDialog, messageId) {
+        if (showDialog) {
+            existing = runCatching { service.find(messageId) }.getOrNull()
+            prefilled = true
+        }
+    }
 
     IconButton(
         onClick = { showDialog = true },
@@ -58,8 +70,9 @@ internal fun MessageFeedbackAction(messageId: String) {
         )
     }
 
-    if (showDialog) {
+    if (showDialog && prefilled) {
         MessageFeedbackDialog(
+            existing = existing,
             onDismiss = { showDialog = false },
             onSubmit = { rating, note ->
                 val sessionId = tracker.currentSessionId.value
@@ -69,7 +82,10 @@ internal fun MessageFeedbackAction(messageId: String) {
                 }
                 scope.launch {
                     runCatching { service.set(sessionId, messageId, rating, note) }
-                        .onSuccess { Toast.makeText(context, R.string.chat_message_feedback_saved, Toast.LENGTH_SHORT).show() }
+                        .onSuccess { saved ->
+                            existing = saved
+                            Toast.makeText(context, R.string.chat_message_feedback_saved, Toast.LENGTH_SHORT).show()
+                        }
                         .onFailure { Toast.makeText(context, R.string.chat_message_feedback_failed, Toast.LENGTH_SHORT).show() }
                 }
                 showDialog = false
@@ -78,11 +94,17 @@ internal fun MessageFeedbackAction(messageId: String) {
     }
 }
 
-/** 👍/👎 单选 + 可选备注；提交要求已选评分（默认 up，单选语义不变）。 */
+/** 👍/👎 单选 + 可选备注；[existing] 非空时预填上次评价。 */
 @Composable
-private fun MessageFeedbackDialog(onDismiss: () -> Unit, onSubmit: (String, String?) -> Unit) {
-    var rating by remember { mutableStateOf(AgentMessageFeedbackEntity.RATING_UP) }
-    var note by remember { mutableStateOf("") }
+private fun MessageFeedbackDialog(
+    existing: AgentMessageFeedbackEntity?,
+    onDismiss: () -> Unit,
+    onSubmit: (String, String?) -> Unit,
+) {
+    var rating by remember(existing?.rating) {
+        mutableStateOf(existing?.rating ?: AgentMessageFeedbackEntity.RATING_UP)
+    }
+    var note by remember(existing?.note) { mutableStateOf(existing?.note.orEmpty()) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.chat_message_feedback_title)) },

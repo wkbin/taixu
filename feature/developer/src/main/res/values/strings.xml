@@ -108,6 +108,12 @@
     <string name="developer_text_0106" formatted="false">重新检查初始化</string>
     <string name="developer_text_0107" formatted="false">重试初始化</string>
     <string name="developer_text_0108" formatted="false">错误</string>
+    <string name="developer_text_0109" formatted="false">消息反馈</string>
+    <string name="developer_text_0110" formatted="false">用户对助手消息的评价，只读（最多 50 条）</string>
+    <string name="developer_text_0111" formatted="false">暂无反馈</string>
+    <string name="developer_text_0112" formatted="false">有帮助</string>
+    <string name="developer_text_0113" formatted="false">有问题</string>
+    <string name="developer_text_0114" formatted="false">未知会话</string>
     <string name="developer_active_process_count">%1$s 个活动进程</string>
     <string name="developer_rootfs_update_failed">RootFS 更新失败：%1$s</string>
     <string name="developer_rootfs_check_failed">RootFS 更新检查失败：%1$s</string>
@@ -122,4 +128,5 @@
     <string name="developer_cleanup_failed">清理失败：%1$s</string>
     <string name="developer_device_space_available">设备剩余空间 %1$s</string>
     <string name="developer_reset_failed">重置失败：%1$s</string>
+    <string name="developer_feedback_count">共 %1$s 条反馈</string>
 </resources>

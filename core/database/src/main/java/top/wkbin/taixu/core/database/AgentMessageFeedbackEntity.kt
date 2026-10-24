@@ -61,6 +61,10 @@ interface AgentMessageFeedbackDao {
     @Query("SELECT * FROM agent_message_feedback WHERE messageId = :messageId LIMIT 1")
     suspend fun findByMessage(messageId: String): AgentMessageFeedbackEntity?
 
+    /** 跨会话最近反馈（开发者诊断只读展示）；表很小，不为全局排序新增索引。 */
+    @Query("SELECT * FROM agent_message_feedback ORDER BY updatedAt DESC LIMIT :limit")
+    fun observeRecent(limit: Int): Flow<List<AgentMessageFeedbackEntity>>
+
     @Query("DELETE FROM agent_message_feedback WHERE sessionId = :sessionId")
     suspend fun deleteForSession(sessionId: String)
 }
@@ -70,11 +74,13 @@ class AgentMessageFeedbackRepository(private val dao: AgentMessageFeedbackDao) {
     fun observeForSession(sessionId: String): Flow<List<AgentMessageFeedbackEntity>> = dao.observeForSession(sessionId)
     suspend fun listForSession(sessionId: String): List<AgentMessageFeedbackEntity> = dao.listForSession(sessionId)
     suspend fun findByMessage(messageId: String): AgentMessageFeedbackEntity? = dao.findByMessage(messageId)
+    fun observeRecent(limit: Int): Flow<List<AgentMessageFeedbackEntity>> = dao.observeRecent(limit)
     suspend fun deleteForSession(sessionId: String) = dao.deleteForSession(sessionId)
 }
 
 /**
- * 反馈写入门面：目标校验（messageId 必须是本会话非空 assistant 消息）+ upsert 收口。
+ * 反馈读写门面：写入侧校验目标（messageId 必须是本会话非空 assistant 消息）并 upsert 收口，
+ * 读取侧提供单条查询与跨会话最近列表（UI 预填 / 开发者诊断）。
  * 校验失败抛 [IllegalArgumentException]，由调用方（Web 桥/UI）转错误响应。
  */
 class MessageFeedbackService(
@@ -111,6 +117,13 @@ class MessageFeedbackService(
 
     suspend fun listForSession(sessionId: String): List<AgentMessageFeedbackEntity> = feedback.listForSession(sessionId)
 
+    /** 单条消息的既有反馈；未评价返回 null（UI 预填用）。 */
+    suspend fun find(messageId: String): AgentMessageFeedbackEntity? = feedback.findByMessage(messageId)
+
+    /** 最近反馈（跨会话倒序），供开发者诊断只读展示。 */
+    fun observeRecent(limit: Int = RECENT_LIMIT): Flow<List<AgentMessageFeedbackEntity>> =
+        feedback.observeRecent(limit)
+
     suspend fun deleteForSession(sessionId: String) = feedback.deleteForSession(sessionId)
 
     private companion object {
@@ -118,5 +131,7 @@ class MessageFeedbackService(
         const val MAIN_LANE = "main"
         /** 目标扫描窗口：反馈只针对近期 assistant 消息，600 条与投影窗口一致。 */
         const val MAX_TARGET_SCAN = 600
+        /** 开发者诊断默认读取窗口。 */
+        const val RECENT_LIMIT = 50
     }
 }

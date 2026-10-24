@@ -128,6 +128,12 @@ private fun localizedResource(source: String): Int? = when (source) {
         "重新检查初始化" -> R.string.developer_text_0106
         "重试初始化" -> R.string.developer_text_0107
         "错误" -> R.string.developer_text_0108
+        "消息反馈" -> R.string.developer_text_0109
+        "用户对助手消息的评价，只读（最多 50 条）" -> R.string.developer_text_0110
+        "暂无反馈" -> R.string.developer_text_0111
+        "有帮助" -> R.string.developer_text_0112
+        "有问题" -> R.string.developer_text_0113
+        "未知会话" -> R.string.developer_text_0114
         else -> null
     }
 
@@ -148,6 +154,7 @@ private fun resolveLocalizedString(source: String): String {
         source.startsWith("清理 ") && source.endsWith("？") -> stringResource(R.string.developer_clean_runtime_confirm, source.removePrefix("清理 ").removeSuffix("？"))
         source.startsWith("清理失败：") -> stringResource(R.string.developer_cleanup_failed, source.removePrefix("清理失败："))
         source.startsWith("设备剩余空间 ") -> stringResource(R.string.developer_device_space_available, source.removePrefix("设备剩余空间 "))
+        source.endsWith(" 条反馈") -> stringResource(R.string.developer_feedback_count, source.removeSuffix(" 条反馈"))
         source.startsWith("重置失败：") -> stringResource(R.string.developer_reset_failed, source.removePrefix("重置失败："))
         else -> source
     }
